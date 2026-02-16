@@ -1,6 +1,5 @@
 import { pgTable, text, serial, integer, timestamp, real } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod";
+import { relations } from "drizzle-orm";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -60,6 +59,20 @@ export const withdrawals = pgTable("withdrawals", {
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// Relations
+export const ordersRelations = relations(orders, ({ many }) => ({
+  items: many(orderItems),
+}));
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
+  product: one(products, { fields: [orderItems.productId], references: [products.id] }),
+}));
+
+export const productsRelations = relations(products, ({ many }) => ({
+  orderItems: many(orderItems),
+}));
 
 export type User = typeof users.$inferSelect;
 export type Product = typeof products.$inferSelect;

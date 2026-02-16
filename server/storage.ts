@@ -95,3 +95,15 @@ export const storage = {
 };
 
 // مضاف للـ storage object — افتح الملف يدوياً وأضف هذا داخل الـ object
+
+export async function getAllUsers() {
+  return db.query.users.findMany({
+    orderBy: (u, { desc }) => [desc(u.createdAt)],
+  });
+}
+
+export async function getAllUsers() {
+  return db.query.users.findMany({
+    orderBy: (u, { desc }) => [desc(u.createdAt)],
+  });
+}
