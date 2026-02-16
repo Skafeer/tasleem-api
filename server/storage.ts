@@ -5,34 +5,40 @@ import { eq } from "drizzle-orm";
 export const storage = {
   // Users
   async getUser(id: number) {
-    return db.query.users.findFirst({ where: eq(users.id, id) });
+    const result = await db.select().from(users).where(eq(users.id, id));
+    return result[0];
   },
   async getUserByPhone(phone: string) {
-    return db.query.users.findFirst({ where: eq(users.phone, phone) });
+    const result = await db.select().from(users).where(eq(users.phone, phone));
+    return result[0];
   },
   async createUser(data: any) {
-    const [user] = await db.insert(users).values(data).returning();
-    return user;
+    const result = await db.insert(users).values(data).returning();
+    return result[0];
   },
   async updateUser(id: number, data: any) {
-    const [user] = await db.update(users).set(data).where(eq(users.id, id)).returning();
-    return user;
+    const result = await db.update(users).set(data).where(eq(users.id, id)).returning();
+    return result[0];
+  },
+  async getAllUsers() {
+    return db.select().from(users);
   },
 
   // Products
   async getProducts() {
-    return db.query.products.findMany({ orderBy: (p, { desc }) => [desc(p.createdAt)] });
+    return db.select().from(products);
   },
   async getProduct(id: number) {
-    return db.query.products.findFirst({ where: eq(products.id, id) });
+    const result = await db.select().from(products).where(eq(products.id, id));
+    return result[0];
   },
   async createProduct(data: any) {
-    const [product] = await db.insert(products).values(data).returning();
-    return product;
+    const result = await db.insert(products).values(data).returning();
+    return result[0];
   },
   async updateProduct(id: number, data: any) {
-    const [product] = await db.update(products).set(data).where(eq(products.id, id)).returning();
-    return product;
+    const result = await db.update(products).set(data).where(eq(products.id, id)).returning();
+    return result[0];
   },
   async deleteProduct(id: number) {
     await db.delete(products).where(eq(products.id, id));
@@ -40,26 +46,55 @@ export const storage = {
 
   // Orders
   async getOrders(merchantId?: number) {
-    if (merchantId) {
-      return db.query.orders.findMany({
-        where: eq(orders.merchantId, merchantId),
-        orderBy: (o, { desc }) => [desc(o.createdAt)],
-        with: { items: { with: { product: true } } },
-      });
-    }
-    return db.query.orders.findMany({
-      orderBy: (o, { desc }) => [desc(o.createdAt)],
-      with: { items: { with: { product: true } } },
-    });
+    const allOrders = merchantId
+      ? await db.select().from(orders).where(eq(orders.merchantId, merchantId))
+      : await db.select().from(orders);
+
+    const result = await Promise.all(allOrders.map(async (order) => {
+      const items = await db.select({
+        id: orderItems.id,
+        orderId: orderItems.orderId,
+        productId: orderItems.productId,
+        quantity: orderItems.quantity,
+        price: orderItems.price,
+        cost: orderItems.cost,
+        product: products,
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(eq(orderItems.orderId, order.id));
+      return { ...order, items };
+    }));
+
+    return result.sort((a, b) =>
+      new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
+    );
   },
+
   async getOrder(id: number) {
-    return db.query.orders.findFirst({
-      where: eq(orders.id, id),
-      with: { items: { with: { product: true } } },
-    });
+    const result = await db.select().from(orders).where(eq(orders.id, id));
+    if (!result[0]) return null;
+    const order = result[0];
+
+    const items = await db.select({
+      id: orderItems.id,
+      orderId: orderItems.orderId,
+      productId: orderItems.productId,
+      quantity: orderItems.quantity,
+      price: orderItems.price,
+      cost: orderItems.cost,
+      product: products,
+    })
+    .from(orderItems)
+    .leftJoin(products, eq(orderItems.productId, products.id))
+    .where(eq(orderItems.orderId, order.id));
+
+    return { ...order, items };
   },
+
   async createOrder(data: any, items: any[]) {
-    const [order] = await db.insert(orders).values(data).returning();
+    const result = await db.insert(orders).values(data).returning();
+    const order = result[0];
     if (items.length > 0) {
       await db.insert(orderItems).values(
         items.map(i => ({ ...i, orderId: order.id }))
@@ -67,43 +102,29 @@ export const storage = {
     }
     return storage.getOrder(order.id);
   },
+
   async updateOrder(id: number, data: any) {
-    const [order] = await db.update(orders).set(data).where(eq(orders.id, id)).returning();
-    return order;
+    const result = await db.update(orders).set(data).where(eq(orders.id, id)).returning();
+    return result[0];
   },
 
   // Withdrawals
   async getWithdrawals(merchantId?: number) {
-    if (merchantId) {
-      return db.query.withdrawals.findMany({
-        where: eq(withdrawals.merchantId, merchantId),
-        orderBy: (w, { desc }) => [desc(w.createdAt)],
-      });
-    }
-    return db.query.withdrawals.findMany({
-      orderBy: (w, { desc }) => [desc(w.createdAt)],
-    });
+    const result = merchantId
+      ? await db.select().from(withdrawals).where(eq(withdrawals.merchantId, merchantId))
+      : await db.select().from(withdrawals);
+    return result.sort((a, b) =>
+      new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
+    );
   },
+
   async createWithdrawal(data: any) {
-    const [w] = await db.insert(withdrawals).values(data).returning();
-    return w;
+    const result = await db.insert(withdrawals).values(data).returning();
+    return result[0];
   },
+
   async updateWithdrawal(id: number, data: any) {
-    const [w] = await db.update(withdrawals).set(data).where(eq(withdrawals.id, id)).returning();
-    return w;
+    const result = await db.update(withdrawals).set(data).where(eq(withdrawals.id, id)).returning();
+    return result[0];
   },
 };
-
-// مضاف للـ storage object — افتح الملف يدوياً وأضف هذا داخل الـ object
-
-export async function getAllUsers() {
-  return db.query.users.findMany({
-    orderBy: (u, { desc }) => [desc(u.createdAt)],
-  });
-}
-
-export async function getAllUsers() {
-  return db.query.users.findMany({
-    orderBy: (u, { desc }) => [desc(u.createdAt)],
-  });
-}
