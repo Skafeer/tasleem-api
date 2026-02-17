@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, real } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, real, boolean } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
 export const users = pgTable("users", {
@@ -22,7 +22,11 @@ export const products = pgTable("products", {
   sellingPriceMin: real("selling_price_min").notNull(),
   category: text("category").notNull().default("عام"),
   imageUrl: text("image_url").notNull().default(""),
+  images: text("images").notNull().default(""),
   stock: integer("stock").notNull().default(0),
+  isRenewable: boolean("is_renewable").notNull().default(false),
+  discount: real("discount").notNull().default(0),
+  adLinks: text("ad_links").notNull().default(""),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -38,6 +42,8 @@ export const orders = pgTable("orders", {
   totalAmount: real("total_amount").notNull().default(0),
   shippingCost: real("shipping_cost").notNull().default(0),
   totalProfit: real("total_profit").notNull().default(0),
+  promoCode: text("promo_code").notNull().default(""),
+  promoDiscount: real("promo_discount").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -60,22 +66,24 @@ export const withdrawals = pgTable("withdrawals", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-// Relations
-export const ordersRelations = relations(orders, ({ many }) => ({
-  items: many(orderItems),
-}));
+export const promoCodes = pgTable("promo_codes", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  discountPercent: real("discount_percent").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
 
+export const ordersRelations = relations(orders, ({ many }) => ({ items: many(orderItems) }));
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
   product: one(products, { fields: [orderItems.productId], references: [products.id] }),
 }));
-
-export const productsRelations = relations(products, ({ many }) => ({
-  orderItems: many(orderItems),
-}));
+export const productsRelations = relations(products, ({ many }) => ({ orderItems: many(orderItems) }));
 
 export type User = typeof users.$inferSelect;
 export type Product = typeof products.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
+export type PromoCode = typeof promoCodes.$inferSelect;
