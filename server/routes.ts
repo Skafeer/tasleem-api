@@ -4,7 +4,7 @@ import { setupAuth, requireAuth } from "./auth";
 import { setupUpload } from "./upload";
 import { storage } from "./storage";
 import { db } from "./db";
-import { promoCodes } from "@shared/schema";
+import { promoCodes, products } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function registerRoutes(httpServer: Server, app: Express) {
@@ -73,17 +73,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         if (!product) throw new Error(`المنتج ${item.productId} غير موجود`);
         const qty = Number(item.quantity);
         const price = Number(item.sellingPrice);
+
+        // ✅ التحقق من أن سعر البيع >= أدنى سعر
+        if (price < product.sellingPriceMin) {
+          throw new Error(`سعر البيع أقل من الحد الأدنى المسموح (${product.sellingPriceMin})`);
+        }
+
         totalAmount += price * qty;
         totalCost += product.wholesalePrice * qty;
         return { productId: Number(item.productId), quantity: qty, price, cost: product.wholesalePrice };
       }));
 
       // Promo code
-      let promoDiscount = 0;
-      let validPromo = "";
+      let promoDiscount = 0, validPromo = "";
       if (promoCode) {
-        const promo = await db.select().from(promoCodes)
-          .where(eq(promoCodes.code, promoCode.toUpperCase()));
+        const promo = await db.select().from(promoCodes).where(eq(promoCodes.code, promoCode.toUpperCase()));
         if (promo[0]?.isActive) {
           promoDiscount = (totalAmount * promo[0].discountPercent) / 100;
           validPromo = promoCode.toUpperCase();
@@ -103,12 +107,24 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         promoCode: validPromo, promoDiscount,
       }, enrichedItems);
 
+      // ✅ تخفيض المخزون
+      await Promise.all(enrichedItems.map(async (item: any) => {
+        const product = await storage.getProduct(item.productId);
+        if (product) {
+          await storage.updateProduct(item.productId, {
+            stock: Math.max(0, product.stock - item.quantity),
+          });
+        }
+      }));
+
+      // تحديث رصيد التاجر
       const freshUser = await storage.getUser(req.user.id);
       if (freshUser) {
         await storage.updateUser(req.user.id, {
           pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
         });
       }
+
       res.status(201).json(order);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -126,6 +142,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             pendingBalance: Math.max(0, (merchant.pendingBalance || 0) - order.totalProfit),
             balance: (merchant.balance || 0) + order.totalProfit,
           });
+        }
+      }
+      // ✅ اذا مرتجع — رجع المخزون
+      if (req.body.status === "returned" && order.status !== "returned") {
+        const fullOrder = await storage.getOrder(order.id);
+        if (fullOrder?.items) {
+          await Promise.all(fullOrder.items.map(async (item: any) => {
+            const product = await storage.getProduct(item.productId);
+            if (product) {
+              await storage.updateProduct(item.productId, {
+                stock: product.stock + item.quantity,
+              });
+            }
+          }));
         }
       }
       res.json(updated);
@@ -165,10 +195,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ── Profile ──
   app.patch("/api/auth/profile", requireAuth, async (req: any, res) => {
-    try {
-      const updated = await storage.updateUser(req.user.id, req.body);
-      res.json(updated);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    try { res.json(await storage.updateUser(req.user.id, req.body)); }
+    catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
   // ── Admin Users ──
@@ -181,18 +209,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ── Promo Codes ──
   app.get("/api/promo-codes", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
-    try {
-      const codes = await db.select().from(promoCodes);
-      res.json(codes);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    try { res.json(await db.select().from(promoCodes)); }
+    catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
   app.post("/api/promo-codes", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
-      const { code, discountPercent } = req.body;
       const result = await db.insert(promoCodes)
-        .values({ code: code.toUpperCase(), discountPercent: Number(discountPercent), isActive: true })
+        .values({ code: req.body.code.toUpperCase(), discountPercent: Number(req.body.discountPercent), isActive: true })
         .returning();
       res.status(201).json(result[0]);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
@@ -208,11 +233,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.post("/api/promo-codes/verify", async (req, res) => {
     try {
-      const { code } = req.body;
-      const result = await db.select().from(promoCodes)
-        .where(eq(promoCodes.code, code.toUpperCase()));
-      if (!result[0] || !result[0].isActive)
-        return res.status(404).json({ message: "كود غير صحيح أو منتهي الصلاحية" });
+      const result = await db.select().from(promoCodes).where(eq(promoCodes.code, req.body.code.toUpperCase()));
+      if (!result[0]?.isActive) return res.status(404).json({ message: "كود غير صحيح أو منتهي الصلاحية" });
       res.json({ discountPercent: result[0].discountPercent });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
