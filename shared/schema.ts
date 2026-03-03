@@ -29,6 +29,7 @@ export const products = pgTable("products", {
   isRenewable: boolean("is_renewable").notNull().default(false),
   discount: real("discount").notNull().default(0),
   adLinks: text("ad_links").notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
