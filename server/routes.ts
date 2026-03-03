@@ -12,8 +12,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   setupUpload(app);
 
   // ── Products ──
-  app.get("/api/products", async (req, res) => {
-    try { res.json(await storage.getProducts()); }
+  app.get("/api/products", async (req: any, res) => {
+    try {
+      const all = await storage.getProducts();
+      const activeOnly = req.query.activeOnly === 'true';
+      res.json(activeOnly ? all.filter((p: any) => p.isActive !== false) : all);
+    }
     catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
