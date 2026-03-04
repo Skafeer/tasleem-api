@@ -38,6 +38,19 @@ app.get("/", (_req, res) => res.json({ status: "ok", app: "Tasleem API" }));
     return res.status(status).json({ message });
   });
 
+  // إنشاء جدول البنرات إذا ما كان موجوداً
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS banners (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      image_url TEXT NOT NULL,
+      link TEXT NOT NULL DEFAULT '',
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen({ port, host: "0.0.0.0" }, () => {
     console.log(`Tasleem API running on port ${port}`);

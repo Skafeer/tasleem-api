@@ -4,7 +4,7 @@ import { setupAuth, requireAuth } from "./auth";
 import { setupUpload } from "./upload";
 import { storage } from "./storage";
 import { db } from "./db";
-import { promoCodes, products, orders, orderItems } from "@shared/schema";
+import { promoCodes, products, orders, orderItems, banners } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function registerRoutes(httpServer: Server, app: Express) {
@@ -347,7 +347,41 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+
+  // ── Banners ──
+  app.get('/api/banners', async (req, res) => {
+    try {
+      const result = await db.select().from(banners).orderBy(banners.sortOrder);
+      res.json(result);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.post('/api/banners', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const result = await db.insert(banners).values(req.body).returning();
+      res.json(result[0]);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.patch('/api/banners/:id', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const result = await db.update(banners).set(req.body).where(eq(banners.id, Number(req.params.id))).returning();
+      res.json(result[0]);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.delete('/api/banners/:id', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      await db.delete(banners).where(eq(banners.id, Number(req.params.id)));
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   return httpServer;
+
 }
 
   // هذا الكود خارج الـ function — نحتاج نضيفه داخلها

@@ -77,6 +77,17 @@ export const promoCodes = pgTable("promo_codes", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+
+export const banners = pgTable('banners', {
+  id: serial('id').primaryKey(),
+  title: text('title').notNull().default(''),
+  imageUrl: text('image_url').notNull(),
+  link: text('link').notNull().default(''),
+  isActive: boolean('is_active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 export const ordersRelations = relations(orders, ({ many }) => ({ items: many(orderItems) }));
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
@@ -90,3 +101,4 @@ export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
 export type PromoCode = typeof promoCodes.$inferSelect;
+export type Banner = typeof banners.$inferSelect;
