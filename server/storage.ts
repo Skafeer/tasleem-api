@@ -116,11 +116,11 @@ export const storage = {
     return result.sort((a, b) =>
       new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
     );
+  },
 
   async getWithdrawal(id: number) {
     const result = await db.select().from(withdrawals).where(eq(withdrawals.id, id));
     return result[0] || null;
-  },
   },
 
   async createWithdrawal(data: any) {
