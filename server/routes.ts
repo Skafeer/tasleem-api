@@ -4,7 +4,7 @@ import { setupAuth, requireAuth } from "./auth";
 import { setupUpload } from "./upload";
 import { storage } from "./storage";
 import { db } from "./db";
-import { promoCodes, products } from "@shared/schema";
+import { promoCodes, products, orders, orderItems } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function registerRoutes(httpServer: Server, app: Express) {
@@ -166,6 +166,58 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+
+  // ── Edit Order (Admin) ──
+  app.put("/api/orders/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
+      const { customerName, customerPhone, province, address, notes, items } = req.body;
+      let updateData: any = {};
+      if (customerName !== undefined) updateData.customerName = customerName;
+      if (customerPhone !== undefined) updateData.customerPhone = customerPhone;
+      if (province !== undefined) updateData.province = province;
+      if (address !== undefined) updateData.address = address;
+      if (notes !== undefined) updateData.notes = notes;
+      if (items && Array.isArray(items)) {
+        await db.delete(orderItems).where(eq(orderItems.orderId, orderId));
+        let totalAmount = 0, totalCost = 0;
+        const enriched = await Promise.all(items.map(async (item: any) => {
+          const product = await storage.getProduct(Number(item.productId));
+          if (!product) throw new Error("منتج غير موجود");
+          const qty = Number(item.quantity);
+          const price = Number(item.price);
+          totalAmount += price * qty;
+          totalCost += product.wholesalePrice * qty;
+          return { orderId, productId: Number(item.productId), quantity: qty, price, cost: product.wholesalePrice };
+        }));
+        await db.insert(orderItems).values(enriched);
+        const shippingCost = order.shippingCost || 5000;
+        const promoDiscount = order.promoDiscount || 0;
+        updateData.totalAmount = totalAmount + shippingCost - promoDiscount;
+        updateData.totalProfit = totalAmount - totalCost - promoDiscount;
+      }
+      await storage.updateOrder(orderId, updateData);
+      const fresh = await storage.getOrder(orderId);
+      res.json(fresh);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // ── Delete Order (Admin) ──
+  app.delete("/api/orders/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
+      await db.delete(orderItems).where(eq(orderItems.orderId, orderId));
+      await db.delete(orders).where(eq(orders.id, orderId));
+      res.json({ message: "تم حذف الطلب" });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   // ── Withdrawals ──
   app.get("/api/withdrawals", requireAuth, async (req: any, res) => {
     try {
@@ -245,3 +297,5 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   return httpServer;
 }
+
+  // هذا الكود خارج الـ function — نحتاج نضيفه داخلها
