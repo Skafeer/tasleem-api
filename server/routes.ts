@@ -245,8 +245,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.patch("/api/withdrawals/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
-    try { res.json(await storage.updateWithdrawal(Number(req.params.id), { status: req.body.status })); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    try {
+      const wId = Number(req.params.id);
+      const newStatus = req.body.status;
+      const w = await storage.getWithdrawal(wId);
+      if (!w) return res.status(404).json({ message: "طلب السحب غير موجود" });
+      await storage.updateWithdrawal(wId, { status: newStatus });
+      if (newStatus === "rejected" && w.status !== "rejected") {
+        const merchant = await storage.getUser(w.merchantId);
+        if (merchant) await storage.updateUser(w.merchantId, { balance: (merchant.balance || 0) + w.amount });
+      }
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
   // ── Profile ──
