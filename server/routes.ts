@@ -291,6 +291,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+  app.delete("/api/admin/users/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      await storage.deleteUser(Number(req.params.id));
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
 
   // ── Promo Codes ──
   app.get("/api/promo-codes", requireAuth, async (req: any, res) => {

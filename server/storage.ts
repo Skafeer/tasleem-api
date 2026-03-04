@@ -24,6 +24,10 @@ export const storage = {
     return db.select().from(users);
   },
 
+  async deleteUser(id: number) {
+    await db.delete(users).where(eq(users.id, id));
+  },
+
   // Products
   async getProducts() {
     return db.select().from(products);
