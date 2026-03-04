@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { createServer } from "http";
+import { pool } from './db';
 import cors from "cors";
 
 const app = express();
