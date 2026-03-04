@@ -325,6 +325,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+
+  app.patch("/api/promo-codes/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const { code, discountPercent, isActive } = req.body;
+      const updateData: any = {};
+      if (code !== undefined) updateData.code = code.toUpperCase();
+      if (discountPercent !== undefined) updateData.discountPercent = Number(discountPercent);
+      if (isActive !== undefined) updateData.isActive = isActive;
+      const result = await db.update(promoCodes).set(updateData).where(eq(promoCodes.id, Number(req.params.id))).returning();
+      res.json(result[0]);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   app.post("/api/promo-codes/verify", async (req, res) => {
     try {
       const result = await db.select().from(promoCodes).where(eq(promoCodes.code, req.body.code.toUpperCase()));
