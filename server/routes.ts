@@ -272,6 +272,26 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+  app.patch("/api/admin/users/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const userId = Number(req.params.id);
+      const { storeName, phone, address, password, balance } = req.body;
+      const updateData: any = {};
+      if (storeName  !== undefined) updateData.storeName = storeName;
+      if (phone      !== undefined) updateData.phone = phone;
+      if (address    !== undefined) updateData.address = address;
+      if (balance    !== undefined) updateData.balance = Number(balance);
+      if (password   !== undefined && password.trim() !== "") {
+        const bcrypt = await import("bcrypt");
+        updateData.password = await bcrypt.hash(password, 10);
+      }
+      const updated = await storage.updateUser(userId, updateData);
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+
   // ── Promo Codes ──
   app.get("/api/promo-codes", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
