@@ -367,7 +367,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.patch('/api/banners/:id', requireAuth, async (req: any, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
     try {
-      const result = await db.update(banners).set(req.body).where(eq(banners.id, Number(req.params.id))).returning();
+      const { title, imageUrl, link, isActive, sortOrder } = req.body;
+      const updateData: any = {};
+      if (title      !== undefined) updateData.title      = title;
+      if (imageUrl   !== undefined) updateData.imageUrl   = imageUrl;
+      if (link       !== undefined) updateData.link       = link;
+      if (isActive   !== undefined) updateData.isActive   = Boolean(isActive);
+      if (sortOrder  !== undefined) updateData.sortOrder  = Number(sortOrder);
+      const result = await db.update(banners).set(updateData).where(eq(banners.id, Number(req.params.id))).returning();
       res.json(result[0]);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
