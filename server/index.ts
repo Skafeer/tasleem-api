@@ -41,6 +41,7 @@ app.get("/", (_req, res) => res.json({ status: "ok", app: "Tasleem API" }));
 
   // إنشاء جدول البنرات إذا ما كان موجوداً
   await pool.query(`
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS company_profit REAL NOT NULL DEFAULT 0;
     CREATE TABLE IF NOT EXISTS banners (
       id SERIAL PRIMARY KEY,
       title TEXT NOT NULL DEFAULT '',

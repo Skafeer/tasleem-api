@@ -71,7 +71,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!items || !Array.isArray(items) || items.length === 0)
         return res.status(400).json({ message: "يجب إضافة منتج واحد على الأقل" });
 
-      let totalAmount = 0, totalCost = 0;
+      let totalAmount = 0, totalCost = 0, totalCompanyCost = 0;
       const enrichedItems = await Promise.all(items.map(async (item: any) => {
         const product = await storage.getProduct(Number(item.productId));
         if (!product) throw new Error(`المنتج ${item.productId} غير موجود`);
@@ -85,6 +85,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
         totalAmount += price * qty;
         totalCost += product.wholesalePrice * qty;
+        totalCompanyCost += (product.companyWholesalePrice || 0) * qty;
         return { productId: Number(item.productId), quantity: qty, price, cost: product.wholesalePrice };
       }));
 
@@ -101,13 +102,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const isBasra = province.includes("البصرة");
       const shippingCost = isBasra ? 3000 : 5000;
       const totalProfit = totalAmount - totalCost - promoDiscount;
+      const companyProfit = totalCost - totalCompanyCost;
       const finalAmount = totalAmount + shippingCost - promoDiscount;
 
       const order = await storage.createOrder({
         merchantId: req.user.id,
         customerName, customerPhone, province, address,
         notes: notes || "", status: "pending",
-        totalAmount: finalAmount, shippingCost, totalProfit,
+        totalAmount: finalAmount, shippingCost, totalProfit, companyProfit,
         promoCode: validPromo, promoDiscount,
       }, enrichedItems);
 

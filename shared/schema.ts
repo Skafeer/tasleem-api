@@ -43,6 +43,7 @@ export const orders = pgTable("orders", {
   notes: text("notes").notNull().default(""),
   status: text("status").notNull().default("pending"),
   totalAmount: real("total_amount").notNull().default(0),
+  companyProfit: real("company_profit").notNull().default(0),
   shippingCost: real("shipping_cost").notNull().default(0),
   totalProfit: real("total_profit").notNull().default(0),
   promoCode: text("promo_code").notNull().default(""),
