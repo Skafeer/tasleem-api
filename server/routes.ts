@@ -164,6 +164,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           }));
         }
       }
+      const STATUS_LABELS: Record<string, string> = {
+        pending:    'قيد الانتظار ⏳',
+        processing: 'قيد المعالجة 🔄',
+        preparing:  'قيد التجهيز 📦',
+        shipping:   'قيد التوصيل 🚴',
+        delivered:  'تم التوصيل ✅',
+        cancelled:  'ملغي ❌',
+        returned:   'راجع 🔙',
+        postponed:  'مؤجل ⏸',
+      };
+      try {
+        const { sendPushNotification } = await import('./notifications');
+        await sendPushNotification({
+          userIds: [order.merchantId],
+          title: 'تحديث حالة الطلب',
+          body: `طلبك رقم #${order.id} أصبح: ${STATUS_LABELS[req.body.status] || req.body.status}`,
+          data: { type: 'order_status', orderId: order.id, status: req.body.status },
+        });
+      } catch (_) {}
       res.json(updated);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -257,6 +276,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         const merchant = await storage.getUser(w.merchantId);
         if (merchant) await storage.updateUser(w.merchantId, { balance: (merchant.balance || 0) + w.amount });
       }
+      const W_LABELS: Record<string, string> = {
+        pending:  'قيد الانتظار ⏳',
+        approved: 'تم القبول ✅',
+        paid:     'تم الدفع 💰',
+        rejected: 'مرفوض ❌',
+      };
+      try {
+        const { sendPushNotification } = await import('./notifications');
+        await sendPushNotification({
+          userIds: [w.merchantId],
+          title: 'تحديث طلب السحب',
+          body: `طلب سحب ${w.amount.toLocaleString()} د.ع أصبح: ${W_LABELS[newStatus] || newStatus}`,
+          data: { type: 'withdrawal_status', withdrawalId: wId, status: newStatus },
+        });
+      } catch (_) {}
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -385,6 +419,43 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
     try {
       await db.delete(banners).where(eq(banners.id, Number(req.params.id)));
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+
+  // ── Notifications Routes ──
+
+  app.post('/api/push-token', requireAuth, async (req: any, res) => {
+    try {
+      const { token } = req.body;
+      if (!token) return res.status(400).json({ message: 'token مطلوب' });
+      await db.execute(`INSERT INTO push_tokens (user_id, token) VALUES (${req.user.id}, '${token}') ON CONFLICT (token) DO UPDATE SET user_id = ${req.user.id}`);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get('/api/notifications', requireAuth, async (req: any, res) => {
+    try {
+      const result = await db.execute(`SELECT * FROM notifications WHERE user_id = ${req.user.id} OR user_id IS NULL ORDER BY created_at DESC LIMIT 50`);
+      res.json(result.rows);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.patch('/api/notifications/read-all', requireAuth, async (req: any, res) => {
+    try {
+      await db.execute(`UPDATE notifications SET is_read = TRUE WHERE user_id = ${req.user.id}`);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.post('/api/notifications/broadcast', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const { title, body } = req.body;
+      if (!title || !body) return res.status(400).json({ message: 'title و body مطلوبان' });
+      const { sendBroadcastNotification } = await import('./notifications');
+      await sendBroadcastNotification({ title, body });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });

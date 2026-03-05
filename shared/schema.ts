@@ -103,3 +103,23 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
 export type PromoCode = typeof promoCodes.$inferSelect;
 export type Banner = typeof banners.$inferSelect;
+
+export const pushTokens = pgTable('push_tokens', {
+  id:        serial('id').primaryKey(),
+  userId:    integer('user_id').notNull(),
+  token:     text('token').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const notifications = pgTable('notifications', {
+  id:        serial('id').primaryKey(),
+  userId:    integer('user_id'),
+  title:     text('title').notNull(),
+  body:      text('body').notNull(),
+  data:      text('data').notNull().default('{}'),
+  isRead:    boolean('is_read').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export type PushToken    = typeof pushTokens.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;
