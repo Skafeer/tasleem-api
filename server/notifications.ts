@@ -4,7 +4,7 @@ import { pushTokens, notifications } from '../shared/schema';
 import { eq, inArray } from 'drizzle-orm';
 
 const expo = new Expo();
-const { isExpoPushToken } = Expo;
+const isExpoPushToken = (token: string) => token.startsWith('ExponentPushToken[');
 
 // إرسال إشعار لمستخدم واحد أو مجموعة
 export async function sendPushNotification({
