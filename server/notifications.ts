@@ -1,15 +1,20 @@
-import { Expo, ExpoPushMessage } from 'expo-server-sdk';
 import { db } from './db';
 import { pushTokens, notifications } from '../shared/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 
-const expo = new Expo({ accessToken: undefined });
-// إرسال إشعار لمستخدم واحد أو مجموعة
+const EXPO_URL = 'https://exp.host/--/api/v2/push/send';
+
+async function sendToExpo(messages: any[]) {
+  const res = await fetch(EXPO_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify(messages),
+  });
+  return res.json();
+}
+
 export async function sendPushNotification({
-  userIds,
-  title,
-  body,
-  data = {},
+  userIds, title, body, data = {},
 }: {
   userIds: number[];
   title: string;
@@ -17,50 +22,26 @@ export async function sendPushNotification({
   data?: Record<string, any>;
 }) {
   try {
-    // جلب tokens المستخدمين
-    const tokens = await db
-      .select()
-      .from(pushTokens)
-      .where(inArray(pushTokens.userId, userIds));
-
+    const tokens = await db.select().from(pushTokens).where(inArray(pushTokens.userId, userIds));
     if (!tokens.length) return;
 
-    // حفظ الإشعار في قاعدة البيانات
     for (const uid of userIds) {
-      await db.insert(notifications).values({
-        userId: uid,
-        title,
-        body,
-        data: JSON.stringify(data),
-      });
+      await db.insert(notifications).values({ userId: uid, title, body, data: JSON.stringify(data) });
     }
 
-    // إرسال الإشعارات
-    const messages: ExpoPushMessage[] = tokens
-      .map(t => ({
-        to:    t.token,
-        sound: 'default' as const,
-        title,
-        body,
-        data,
-      }));
+    const messages = tokens
+      .filter(t => t.token.startsWith('ExponentPushToken['))
+      .map(t => ({ to: t.token, sound: 'default', title, body, data }));
 
     if (!messages.length) return;
-
-    const chunks = expo.chunkPushNotifications(messages);
-    for (const chunk of chunks) {
-      await expo.sendPushNotificationsAsync(chunk);
-    }
+    await sendToExpo(messages);
   } catch (e) {
     console.error('Push notification error:', e);
   }
 }
 
-// إرسال إشعار لجميع المستخدمين
 export async function sendBroadcastNotification({
-  title,
-  body,
-  data = {},
+  title, body, data = {},
 }: {
   title: string;
   body: string;
@@ -70,16 +51,15 @@ export async function sendBroadcastNotification({
     const tokens = await db.select().from(pushTokens);
     if (!tokens.length) return;
 
-    // حفظ إشعار عام (userId = null)
     await db.insert(notifications).values({ userId: null, title, body, data: JSON.stringify(data) });
 
-    const messages: ExpoPushMessage[] = tokens
-      .map(t => ({ to: t.token, sound: 'default' as const, title, body, data }));
+    const messages = tokens
+      .filter(t => t.token.startsWith('ExponentPushToken['))
+      .map(t => ({ to: t.token, sound: 'default', title, body, data }));
 
-    const chunks = expo.chunkPushNotifications(messages);
-    for (const chunk of chunks) {
-      await expo.sendPushNotificationsAsync(chunk);
-    }
+    if (!messages.length) return;
+    const result = await sendToExpo(messages);
+    console.log('Broadcast result:', JSON.stringify(result));
   } catch (e) {
     console.error('Broadcast notification error:', e);
   }
