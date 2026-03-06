@@ -57,6 +57,8 @@ app.get("/", (_req, res) => res.json({ status: "ok", app: "Tasleem API" }));
       is_read BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT NOW()
     );
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS data TEXT NOT NULL DEFAULT '{}';
     CREATE TABLE IF NOT EXISTS banners (
       id SERIAL PRIMARY KEY,
       title TEXT NOT NULL DEFAULT '',
