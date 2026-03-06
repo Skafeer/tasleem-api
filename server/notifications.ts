@@ -4,6 +4,7 @@ import { pushTokens, notifications } from '../shared/schema';
 import { eq, inArray } from 'drizzle-orm';
 
 const expo = new Expo();
+const { isExpoPushToken } = Expo;
 
 // إرسال إشعار لمستخدم واحد أو مجموعة
 export async function sendPushNotification({
@@ -38,7 +39,7 @@ export async function sendPushNotification({
 
     // إرسال الإشعارات
     const messages: ExpoPushMessage[] = tokens
-      .filter(t => Expo.isExpoPushToken(t.token))
+      .filter(t => isExpoPushToken(t.token))
       .map(t => ({
         to:    t.token,
         sound: 'default' as const,
@@ -76,7 +77,7 @@ export async function sendBroadcastNotification({
     await db.insert(notifications).values({ userId: null, title, body, data: JSON.stringify(data) });
 
     const messages: ExpoPushMessage[] = tokens
-      .filter(t => Expo.isExpoPushToken(t.token))
+      .filter(t => isExpoPushToken(t.token))
       .map(t => ({ to: t.token, sound: 'default' as const, title, body, data }));
 
     const chunks = expo.chunkPushNotifications(messages);
