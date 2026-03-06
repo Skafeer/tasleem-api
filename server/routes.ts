@@ -424,6 +424,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
 
+  // ── Debug: get all push tokens ──
+  app.get('/api/push-tokens-debug', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const result = await db.execute(`SELECT * FROM push_tokens`);
+      res.json(result.rows);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   // ── Notifications Routes ──
 
   app.post('/api/push-token', requireAuth, async (req: any, res) => {
