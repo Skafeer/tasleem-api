@@ -1,9 +1,9 @@
-import Expo, { ExpoPushMessage } from 'expo-server-sdk';
+import { Expo, ExpoPushMessage } from 'expo-server-sdk';
 import { db } from './db';
 import { pushTokens, notifications } from '../shared/schema';
 import { eq, inArray } from 'drizzle-orm';
 
-const expo = new Expo();
+const expo = new Expo({ accessToken: undefined });
 // إرسال إشعار لمستخدم واحد أو مجموعة
 export async function sendPushNotification({
   userIds,
