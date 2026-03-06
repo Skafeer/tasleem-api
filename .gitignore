@@ -2,3 +2,4 @@ node_modules/
 dist/
 .env
 *.log
+server/tasleem-472de-firebase-adminsdk-fbsvc-dd6d05e853.json

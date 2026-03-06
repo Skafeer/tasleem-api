@@ -1,16 +1,15 @@
+import * as admin from 'firebase-admin';
 import { db } from './db';
 import { pushTokens, notifications } from '../shared/schema';
 import { inArray } from 'drizzle-orm';
+import * as path from 'path';
 
-const EXPO_URL = 'https://exp.host/--/api/v2/push/send';
-
-async function sendToExpo(messages: any[]) {
-  const res = await fetch(EXPO_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    body: JSON.stringify(messages),
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(
+      path.join(__dirname, 'tasleem-472de-firebase-adminsdk-fbsvc-dd6d05e853.json')
+    ),
   });
-  return res.json();
 }
 
 export async function sendPushNotification({
@@ -29,12 +28,17 @@ export async function sendPushNotification({
       await db.insert(notifications).values({ userId: uid, title, body, data: JSON.stringify(data) });
     }
 
-    const messages = tokens
-      .filter(t => t.token.startsWith('ExponentPushToken['))
-      .map(t => ({ to: t.token, sound: 'default', title, body, data }));
-
-    if (!messages.length) return;
-    await sendToExpo(messages);
+    for (const t of tokens) {
+      try {
+        await admin.messaging().send({
+          token: t.token,
+          notification: { title, body },
+          data: Object.fromEntries(Object.entries(data).map(([k,v]) => [k, String(v)])),
+        });
+      } catch (e) {
+        console.error('Token send error:', e);
+      }
+    }
   } catch (e) {
     console.error('Push notification error:', e);
   }
@@ -49,17 +53,22 @@ export async function sendBroadcastNotification({
 }) {
   try {
     const tokens = await db.select().from(pushTokens);
-    if (!tokens.length) return;
+    if (!tokens.length) { console.log('No tokens found'); return; }
 
     await db.insert(notifications).values({ userId: null, title, body, data: JSON.stringify(data) });
 
-    const messages = tokens
-      .filter(t => t.token.startsWith('ExponentPushToken['))
-      .map(t => ({ to: t.token, sound: 'default', title, body, data }));
-
-    if (!messages.length) return;
-    const result = await sendToExpo(messages);
-    console.log('Broadcast result:', JSON.stringify(result));
+    for (const t of tokens) {
+      try {
+        const result = await admin.messaging().send({
+          token: t.token,
+          notification: { title, body },
+          data: Object.fromEntries(Object.entries(data).map(([k,v]) => [k, String(v)])),
+        });
+        console.log('Sent to:', t.token.slice(0,20), 'result:', result);
+      } catch (e: any) {
+        console.error('Token error:', t.token.slice(0,20), e.message);
+      }
+    }
   } catch (e) {
     console.error('Broadcast notification error:', e);
   }
