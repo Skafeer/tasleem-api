@@ -11,6 +11,9 @@ export const users = pgTable("users", {
   merchantId: text("merchant_id").notNull().unique(),
   balance: real("balance").notNull().default(0),
   pendingBalance: real("pending_balance").notNull().default(0),
+  isSuperAdmin: boolean("is_super_admin").notNull().default(false),
+  // JSON array of permissions: ["orders","products","withdrawals","merchants","promos","banners","stats","notifications"]
+  permissions: text("permissions").notNull().default("[]"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -77,7 +80,6 @@ export const promoCodes = pgTable("promo_codes", {
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
-
 
 export const banners = pgTable('banners', {
   id: serial('id').primaryKey(),
