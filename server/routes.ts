@@ -1,4 +1,4 @@
-import { Express } from "express";
+import { Express, Request, Response } from "express";
 import { Server } from "http";
 import { setupAuth, requireAuth } from "./auth";
 import { setupUpload } from "./upload";
@@ -7,6 +7,33 @@ import { db } from "./db";
 import { promoCodes, products, orders, orderItems, banners } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
+
+// ── Rate Limiter بسيط بدون مكتبة ──
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimit(maxRequests: number, windowMs: number) {
+  return (req: any, res: any, next: any) => {
+    const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    const now = Date.now();
+    const entry = rateLimitMap.get(key);
+
+    if (!entry || now > entry.resetAt) {
+      rateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    entry.count++;
+    if (entry.count > maxRequests) {
+      return res.status(429).json({ message: 'طلبات كثيرة جداً، حاول بعد قليل' });
+    }
+    next();
+  };
+}
+
+// حدود مختلفة لكل نوع
+const authLimiter    = rateLimit(10, 60_000);   // 10 محاولات/دقيقة للـ login
+const generalLimiter = rateLimit(100, 60_000);  // 100 طلب/دقيقة للباقي
+const broadcastLimiter = rateLimit(5, 60_000);  // 5 إشعارات/دقيقة
 
 // ── helper: تحقق من صلاحية معينة ──
 const hasPermission = (user: any, perm: string): boolean => {
@@ -116,7 +143,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
-  app.post("/api/orders", requireAuth, async (req: any, res) => {
+  app.post("/api/orders", requireAuth, generalLimiter, async (req: any, res) => {
     try {
       const { items, customerName, customerPhone, province, address, notes, promoCode } = req.body;
       if (!items || !Array.isArray(items) || items.length === 0)
@@ -298,7 +325,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
-  app.post("/api/withdrawals", requireAuth, async (req: any, res) => {
+  app.post("/api/withdrawals", requireAuth, generalLimiter, async (req: any, res) => {
     try {
       const amt = Number(req.body.amount);
       const freshUser = await storage.getUser(req.user.id);
@@ -509,7 +536,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
-  app.post('/api/notifications/broadcast', requireAuth, async (req: any, res) => {
+  app.post('/api/notifications/broadcast', requireAuth, broadcastLimiter, async (req: any, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
     try {
       const { title, body } = req.body;
