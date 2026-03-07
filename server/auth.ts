@@ -9,6 +9,23 @@ import jwt from "jsonwebtoken";
 const scryptAsync = promisify(scrypt);
 const JWT_SECRET = process.env.SESSION_SECRET || "tasleem_secret_2026";
 
+// ── Rate Limiter للـ auth ──
+const authRateMap = new Map<string, { count: number; resetAt: number }>();
+function authRateLimit(req: any, res: any, next: any) {
+  const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  const now = Date.now();
+  const entry = authRateMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    authRateMap.set(key, { count: 1, resetAt: now + 60_000 });
+    return next();
+  }
+  entry.count++;
+  if (entry.count > 10) {
+    return res.status(429).json({ message: 'محاولات كثيرة، حاول بعد دقيقة' });
+  }
+  next();
+}
+
 async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
   const buf = (await scryptAsync(password, salt, 64)) as Buffer;
@@ -46,7 +63,7 @@ export function requireAuth(req: any, res: any, next: any) {
 
 export function setupAuth(app: Express) {
   // Register
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/api/auth/register", authRateLimit, async (req, res) => {
     try {
       const { phone, password, storeName, address } = req.body;
       const existing = await storage.getUserByPhone(phone);
@@ -66,7 +83,7 @@ export function setupAuth(app: Express) {
   });
 
   // Login
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/login", authRateLimit, async (req, res) => {
     try {
       const { phone, password } = req.body;
       const user = await storage.getUserByPhone(phone);
