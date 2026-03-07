@@ -503,17 +503,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // إضافة أدمن جديد (superAdmin فقط)
+  // ترقية تاجر موجود لأدمن
   app.post('/api/admin/admins', requireAuth, async (req: any, res) => {
     if (!req.user.is_super_admin && !req.user.isSuperAdmin) return res.status(403).json({ message: 'غير مصرح - سوبر أدمن فقط' });
     try {
-      const { storeName, phone, password, permissions } = req.body;
-      if (!storeName || !phone || !password) return res.status(400).json({ message: 'جميع الحقول مطلوبة' });
-      const existing = await db.execute(`SELECT id FROM users WHERE phone = '${phone}'`);
-      if (existing.rows.length > 0) return res.status(400).json({ message: 'رقم الهاتف مستخدم مسبقاً' });
-      const hashed = await bcrypt.hash(password, 10);
-      const merchantId = 'ADMIN-' + Date.now().toString().slice(-6);
+      const { userId, permissions } = req.body;
+      if (!userId) return res.status(400).json({ message: 'userId مطلوب' });
       const permsJson = JSON.stringify(permissions || []);
-      await db.execute(`INSERT INTO users (phone, password, store_name, address, role, merchant_id, is_super_admin, permissions) VALUES ('${phone}', '${hashed}', '${storeName}', '', 'admin', '${merchantId}', FALSE, '${permsJson}')`);
+      await db.execute(`UPDATE users SET role = 'admin', is_super_admin = FALSE, permissions = '${permsJson}' WHERE id = ${userId} AND role = 'merchant'`);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // تحويل أدمن لتاجر
+  app.post('/api/admin/admins/:id/demote', requireAuth, async (req: any, res) => {
+    if (!req.user.is_super_admin && !req.user.isSuperAdmin) return res.status(403).json({ message: 'غير مصرح - سوبر أدمن فقط' });
+    try {
+      const adminId = Number(req.params.id);
+      if (adminId === req.user.id) return res.status(400).json({ message: 'لا يمكنك تحويل حسابك' });
+      await db.execute(`UPDATE users SET role = 'merchant', is_super_admin = FALSE, permissions = '[]' WHERE id = ${adminId} AND is_super_admin = FALSE`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
