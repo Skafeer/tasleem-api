@@ -1,6 +1,6 @@
 import { db } from "./db";
-import { users, products, orders, orderItems, withdrawals } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { users, products, orders, orderItems, withdrawals, favorites } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 
 export const storage = {
   // Users
@@ -135,5 +135,30 @@ export const storage = {
   async updateWithdrawal(id: number, data: any) {
     const result = await db.update(withdrawals).set(data).where(eq(withdrawals.id, id)).returning();
     return result[0];
+  },
+
+  // Favorites
+  async getFavorites(userId: number) {
+    return await db.select().from(favorites).where(eq(favorites.userId, userId));
+  },
+
+  async addFavorite(userId: number, productId: number) {
+    const existing = await db.select().from(favorites)
+      .where(eq(favorites.userId, userId));
+    const alreadyExists = existing.find((f: any) => f.productId === productId);
+    if (alreadyExists) return alreadyExists;
+    const result = await db.insert(favorites).values({ userId, productId }).returning();
+    return result[0];
+  },
+
+  async removeFavorite(userId: number, productId: number) {
+    await db.delete(favorites)
+      .where(and(eq(favorites.userId, userId), eq(favorites.productId, productId)));
+    return { success: true };
+  },
+
+  async isFavorite(userId: number, productId: number) {
+    const result = await db.select().from(favorites).where(eq(favorites.userId, userId));
+    return result.some(f => f.productId === productId);
   },
 };

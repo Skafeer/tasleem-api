@@ -125,3 +125,12 @@ export const notifications = pgTable('notifications', {
 
 export type PushToken    = typeof pushTokens.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+
+export const favorites = pgTable('favorites', {
+  id:        serial('id').primaryKey(),
+  userId:    integer('user_id').notNull(),
+  productId: integer('product_id').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export type Favorite = typeof favorites.$inferSelect;

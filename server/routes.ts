@@ -607,6 +607,31 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+  // ── Favorites Routes ──
+  app.get('/api/favorites', requireAuth, async (req: any, res) => {
+    try {
+      const favs = await storage.getFavorites(req.user.id);
+      const productIds = favs.map((f: any) => f.productId);
+      res.json(productIds);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.post('/api/favorites/:productId', requireAuth, async (req: any, res) => {
+    try {
+      const productId = Number(req.params.productId);
+      await storage.addFavorite(req.user.id, productId);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.delete('/api/favorites/:productId', requireAuth, async (req: any, res) => {
+    try {
+      const productId = Number(req.params.productId);
+      await storage.removeFavorite(req.user.id, productId);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   return httpServer;
 
 }
