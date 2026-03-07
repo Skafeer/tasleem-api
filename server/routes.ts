@@ -71,7 +71,38 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/orders", requireAuth, async (req: any, res) => {
     try {
       const merchantId = req.user.role === "admin" ? undefined : req.user.id;
-      res.json(await storage.getOrders(merchantId));
+      const page   = Math.max(1, Number(req.query.page)  || 1);
+      const limit  = Math.min(50, Number(req.query.limit) || 20);
+      const status = req.query.status as string | undefined;
+      const search = req.query.search as string | undefined;
+      const offset = (page - 1) * limit;
+
+      // جلب كل الطلبات ثم فلترة وpagination
+      let all = await storage.getOrders(merchantId);
+
+      if (status && status !== 'all') {
+        all = all.filter((o: any) => o.status === status);
+      }
+      if (search) {
+        const s = search.toLowerCase();
+        all = all.filter((o: any) =>
+          String(o.id).includes(s) ||
+          o.customerName?.toLowerCase().includes(s) ||
+          o.customerPhone?.includes(s)
+        );
+      }
+
+      const total = all.length;
+      const data  = all.slice(offset, offset + limit);
+
+      res.json({
+        data,
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        hasMore: offset + limit < total,
+      });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
