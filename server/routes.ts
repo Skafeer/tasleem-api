@@ -5,7 +5,7 @@ import { setupUpload } from "./upload";
 import { storage } from "./storage";
 import { db } from "./db";
 import { promoCodes, products, orders, orderItems, banners } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 // ── helper: تحقق من صلاحية معينة ──
@@ -459,21 +459,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const { token } = req.body;
       if (!token) return res.status(400).json({ message: 'token مطلوب' });
-      await db.execute(`INSERT INTO push_tokens (user_id, token) VALUES (${req.user.id}, '${token}') ON CONFLICT (token) DO UPDATE SET user_id = ${req.user.id}`);
+      await db.execute(sql`INSERT INTO push_tokens (user_id, token) VALUES (${req.user.id}, ${token}) ON CONFLICT (token) DO UPDATE SET user_id = ${req.user.id}`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
   app.get('/api/notifications', requireAuth, async (req: any, res) => {
     try {
-      const result = await db.execute(`SELECT * FROM notifications WHERE user_id = ${req.user.id} OR user_id IS NULL ORDER BY created_at DESC LIMIT 50`);
+      const result = await db.execute(sql`SELECT * FROM notifications WHERE user_id = ${req.user.id} OR user_id IS NULL ORDER BY created_at DESC LIMIT 50`);
       res.json(result.rows);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
   app.patch('/api/notifications/read-all', requireAuth, async (req: any, res) => {
     try {
-      await db.execute(`UPDATE notifications SET is_read = TRUE WHERE user_id = ${req.user.id}`);
+      await db.execute(sql`UPDATE notifications SET is_read = TRUE WHERE user_id = ${req.user.id}`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -497,7 +497,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get('/api/admin/admins', requireAuth, async (req: any, res) => {
     if (!req.user.is_super_admin && !req.user.isSuperAdmin) return res.status(403).json({ message: 'غير مصرح - سوبر أدمن فقط' });
     try {
-      const result = await db.execute(`SELECT id, store_name, phone, merchant_id, is_super_admin, permissions, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC`);
+      const result = await db.execute(sql`SELECT id, store_name, phone, merchant_id, is_super_admin, permissions, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC`);
       res.json(result.rows);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -510,7 +510,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { userId, permissions } = req.body;
       if (!userId) return res.status(400).json({ message: 'userId مطلوب' });
       const permsJson = JSON.stringify(permissions || []);
-      await db.execute(`UPDATE users SET role = 'admin', is_super_admin = FALSE, permissions = '${permsJson}' WHERE id = ${userId} AND role = 'merchant'`);
+      await db.execute(sql`UPDATE users SET role = 'admin', is_super_admin = FALSE, permissions = ${permsJson} WHERE id = ${userId} AND role = 'merchant'`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -521,7 +521,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const adminId = Number(req.params.id);
       if (adminId === req.user.id) return res.status(400).json({ message: 'لا يمكنك تحويل حسابك' });
-      await db.execute(`UPDATE users SET role = 'merchant', is_super_admin = FALSE, permissions = '[]' WHERE id = ${adminId} AND is_super_admin = FALSE`);
+      await db.execute(sql`UPDATE users SET role = 'merchant', is_super_admin = FALSE, permissions = '[]' WHERE id = ${adminId} AND is_super_admin = FALSE`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -533,7 +533,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const adminId = Number(req.params.id);
       const { permissions } = req.body;
       const permsJson = JSON.stringify(permissions || []);
-      await db.execute(`UPDATE users SET permissions = '${permsJson}' WHERE id = ${adminId} AND role = 'admin' AND is_super_admin = FALSE`);
+      await db.execute(sql`UPDATE users SET permissions = ${permsJson} WHERE id = ${adminId} AND role = 'admin' AND is_super_admin = FALSE`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
@@ -544,7 +544,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const adminId = Number(req.params.id);
       if (adminId === req.user.id) return res.status(400).json({ message: 'لا يمكنك حذف حسابك' });
-      await db.execute(`DELETE FROM users WHERE id = ${adminId} AND role = 'admin' AND is_super_admin = FALSE`);
+      await db.execute(sql`DELETE FROM users WHERE id = ${adminId} AND role = 'admin' AND is_super_admin = FALSE`);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
