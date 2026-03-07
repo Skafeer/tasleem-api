@@ -70,6 +70,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ Favorites migration done');
   } catch (e) { console.log('Favorites migration note:', e); }
 
+  // ── Migration: جدول الشات ──
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS support_messages (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      from_admin BOOLEAN NOT NULL DEFAULT FALSE,
+      message TEXT NOT NULL,
+      is_read BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ Support messages migration done');
+  } catch (e) { console.log('Support migration note:', e); }
+
   // ── Products ──
   app.get("/api/products", async (req: any, res) => {
     try {
@@ -641,6 +654,108 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const productId = Number(req.params.productId);
       await storage.removeFavorite(req.user.id, productId);
       res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // ══════════════════════════════════════════
+  // ── Support Chat Routes ──
+  // ══════════════════════════════════════════
+
+  // التاجر يجلب محادثته
+  app.get('/api/support/messages', requireAuth, async (req: any, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT * FROM support_messages WHERE user_id = ${req.user.id}
+        ORDER BY created_at ASC
+      `);
+      // تحديث الرسائل كمقروءة
+      await db.execute(sql`
+        UPDATE support_messages SET is_read = TRUE
+        WHERE user_id = ${req.user.id} AND from_admin = TRUE AND is_read = FALSE
+      `);
+      res.json(result.rows);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // التاجر يرسل رسالة
+  app.post('/api/support/messages', requireAuth, async (req: any, res) => {
+    try {
+      const { message } = req.body;
+      if (!message?.trim()) return res.status(400).json({ message: 'الرسالة فارغة' });
+      await db.execute(sql`
+        INSERT INTO support_messages (user_id, from_admin, message)
+        VALUES (${req.user.id}, FALSE, ${message.trim()})
+      `);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // الأدمن يجلب كل المحادثات
+  app.get('/api/admin/support', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const result = await db.execute(sql`
+        SELECT sm.*, u.store_name, u.phone
+        FROM support_messages sm
+        JOIN users u ON u.id = sm.user_id
+        ORDER BY sm.created_at DESC
+      `);
+      // تجميع المحادثات حسب المستخدم
+      const map: Record<number, any> = {};
+      for (const row of result.rows as any[]) {
+        if (!map[row.user_id]) {
+          map[row.user_id] = {
+            userId: row.user_id,
+            storeName: row.store_name,
+            phone: row.phone,
+            messages: [],
+            unread: 0,
+            lastMessage: null,
+          };
+        }
+        map[row.user_id].messages.push(row);
+        if (!row.from_admin && !row.is_read) map[row.user_id].unread++;
+        map[row.user_id].lastMessage = row;
+      }
+      res.json(Object.values(map).sort((a: any, b: any) =>
+        new Date(b.lastMessage?.created_at).getTime() - new Date(a.lastMessage?.created_at).getTime()
+      ));
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // الأدمن يرد على محادثة تاجر
+  app.post('/api/admin/support/:userId', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const userId = Number(req.params.userId);
+      const { message } = req.body;
+      if (!message?.trim()) return res.status(400).json({ message: 'الرسالة فارغة' });
+      await db.execute(sql`
+        INSERT INTO support_messages (user_id, from_admin, message)
+        VALUES (${userId}, TRUE, ${message.trim()})
+      `);
+      // إرسال push notification للتاجر
+      try {
+        const { sendPushNotification } = await import('./notifications');
+        await sendPushNotification({
+          userIds: [userId],
+          title: 'رسالة جديدة من الدعم',
+          body: message.trim().substring(0, 80),
+          data: { type: 'support_message' },
+        });
+      } catch (_) {}
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // عدد الرسائل غير المقروءة للتاجر
+  app.get('/api/support/unread', requireAuth, async (req: any, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT COUNT(*) as count FROM support_messages
+        WHERE user_id = ${req.user.id} AND from_admin = TRUE AND is_read = FALSE
+      `);
+      res.json({ count: Number((result.rows[0] as any)?.count || 0) });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 

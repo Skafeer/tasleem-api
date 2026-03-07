@@ -134,3 +134,14 @@ export const favorites = pgTable('favorites', {
 });
 
 export type Favorite = typeof favorites.$inferSelect;
+
+export const supportMessages = pgTable('support_messages', {
+  id:        serial('id').primaryKey(),
+  userId:    integer('user_id').notNull(),
+  fromAdmin: boolean('from_admin').notNull().default(false),
+  message:   text('message').notNull(),
+  isRead:    boolean('is_read').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export type SupportMessage = typeof supportMessages.$inferSelect;
