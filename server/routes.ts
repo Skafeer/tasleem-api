@@ -58,6 +58,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ Admin permissions migration done');
   } catch (e) { console.log('Migration note:', e); }
 
+  // ── Migration: جدول المفضلة ──
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS favorites (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, product_id)
+    )`);
+    console.log('✅ Favorites migration done');
+  } catch (e) { console.log('Favorites migration note:', e); }
+
   // ── Products ──
   app.get("/api/products", async (req: any, res) => {
     try {
