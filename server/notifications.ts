@@ -2,13 +2,13 @@ import * as admin from 'firebase-admin';
 import { db } from './db';
 import { pushTokens, notifications } from '../shared/schema';
 import { inArray } from 'drizzle-orm';
-import * as path from 'path';
 
 if (!admin.apps.length) {
+  const serviceAccount = JSON.parse(
+    Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT!, 'base64').toString('utf8')
+  );
   admin.initializeApp({
-    credential: admin.credential.cert(
-      path.join(__dirname, 'tasleem-472de-firebase-adminsdk-fbsvc-dd6d05e853.json')
-    ),
+    credential: admin.credential.cert(serviceAccount),
   });
 }
 
@@ -35,8 +35,8 @@ export async function sendPushNotification({
           notification: { title, body },
           data: Object.fromEntries(Object.entries(data).map(([k,v]) => [k, String(v)])),
         });
-      } catch (e) {
-        console.error('Token send error:', e);
+      } catch (e: any) {
+        console.error('Token send error:', e.message);
       }
     }
   } catch (e) {
@@ -64,9 +64,9 @@ export async function sendBroadcastNotification({
           notification: { title, body },
           data: Object.fromEntries(Object.entries(data).map(([k,v]) => [k, String(v)])),
         });
-        console.log('Sent to:', t.token.slice(0,20), 'result:', result);
+        console.log('Sent:', result);
       } catch (e: any) {
-        console.error('Token error:', t.token.slice(0,20), e.message);
+        console.error('Token error:', e.message);
       }
     }
   } catch (e) {
