@@ -22,7 +22,7 @@ async function comparePasswords(supplied: string, stored: string) {
   return timingSafeEqual(hashedPasswordBuf, suppliedPasswordBuf);
 }
 
-// JWT Middleware
+// JWT Middleware — يجيب الـ user من الداتابيس دايماً لضمان أحدث بيانات
 export function requireAuth(req: any, res: any, next: any) {
   const auth = req.headers['authorization'];
   if (!auth || !auth.startsWith('Bearer ')) {
@@ -31,9 +31,14 @@ export function requireAuth(req: any, res: any, next: any) {
   try {
     const token = auth.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    req.user = decoded;
-    req.isAuthenticated = () => true;
-    next();
+    // نجيب الـ user من الداتابيس عشان نضمن is_super_admin و permissions محدثين
+    storage.getUser(decoded.id).then(user => {
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const { password: _, ...u } = user;
+      req.user = u;
+      req.isAuthenticated = () => true;
+      next();
+    }).catch(() => res.status(401).json({ message: "Unauthorized" }));
   } catch {
     return res.status(401).json({ message: "Unauthorized" });
   }
