@@ -132,8 +132,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const merchantId = req.user.role === "admin" ? undefined : req.user.id;
       const page   = Math.max(1, Number(req.query.page)  || 1);
-      const isAdmin = req.user.role === 'admin';
-      const limit  = isAdmin && Number(req.query.limit) >= 9999 ? 999999 : Math.min(50, Number(req.query.limit) || 20);
+      const limit  = Math.min(50, Number(req.query.limit) || 20);
       const status = req.query.status as string | undefined;
       const search = req.query.search as string | undefined;
       const offset = (page - 1) * limit;
@@ -818,6 +817,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const data = await response.json() as any;
       if (!data.secure_url) return res.status(500).json({ message: 'فشل رفع الصورة' });
       res.json({ url: data.secure_url });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // ── Stats endpoint مخصص ──
+  app.get('/api/admin/stats-data', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const [orders, withdrawals, products] = await Promise.all([
+        storage.getOrders(undefined),
+        storage.getWithdrawals(),
+        storage.getProducts(),
+      ]);
+      const usersResult = await db.execute(sql`SELECT * FROM users`);
+      const users = usersResult.rows;
+      res.json({ orders, users, withdrawals, products });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
