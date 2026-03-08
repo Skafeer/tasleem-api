@@ -9,7 +9,7 @@ import jwt from "jsonwebtoken";
 const scryptAsync = promisify(scrypt);
 const JWT_SECRET = process.env.SESSION_SECRET || "tasleem_secret_2026";
 
-// ── Rate Limiter للـ auth ──
+// ── Rate Limiter عام (IP) ──
 const authRateMap = new Map<string, { count: number; resetAt: number }>();
 function authRateLimit(req: any, res: any, next: any) {
   const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
@@ -24,6 +24,40 @@ function authRateLimit(req: any, res: any, next: any) {
     return res.status(429).json({ message: 'محاولات كثيرة، حاول بعد دقيقة' });
   }
   next();
+}
+
+// ── حظر بعد 5 محاولات فاشلة لنفس الرقم ──
+const loginFailMap = new Map<string, { count: number; blockedUntil: number }>();
+const BLOCK_DURATION = 15 * 60 * 1000; // 15 دقيقة
+const MAX_ATTEMPTS = 5;
+
+function checkLoginBlock(phone: string): { blocked: boolean; minutesLeft?: number } {
+  const entry = loginFailMap.get(phone);
+  if (!entry) return { blocked: false };
+  const now = Date.now();
+  if (entry.blockedUntil && now < entry.blockedUntil) {
+    const minutesLeft = Math.ceil((entry.blockedUntil - now) / 60_000);
+    return { blocked: true, minutesLeft };
+  }
+  if (entry.blockedUntil && now >= entry.blockedUntil) {
+    loginFailMap.delete(phone);
+  }
+  return { blocked: false };
+}
+
+function recordLoginFail(phone: string) {
+  const now = Date.now();
+  const entry = loginFailMap.get(phone) || { count: 0, blockedUntil: 0 };
+  entry.count++;
+  if (entry.count >= MAX_ATTEMPTS) {
+    entry.blockedUntil = now + BLOCK_DURATION;
+    entry.count = 0;
+  }
+  loginFailMap.set(phone, entry);
+}
+
+function clearLoginFail(phone: string) {
+  loginFailMap.delete(phone);
 }
 
 async function hashPassword(password: string) {
@@ -86,10 +120,29 @@ export function setupAuth(app: Express) {
   app.post("/api/auth/login", authRateLimit, async (req, res) => {
     try {
       const { phone, password } = req.body;
+      if (!phone) return res.status(400).json({ message: 'يرجى إدخال رقم الهاتف' });
+
+      // تحقق من الحظر
+      const blockStatus = checkLoginBlock(phone);
+      if (blockStatus.blocked) {
+        return res.status(429).json({
+          message: `تم تعليق حسابك مؤقتاً بسبب محاولات متعددة. حاول بعد ${blockStatus.minutesLeft} دقيقة`
+        });
+      }
+
       const user = await storage.getUserByPhone(phone);
       if (!user || !(await comparePasswords(password, user.password))) {
-        return res.status(401).json({ message: "رقم الهاتف أو كلمة المرور غير صحيحة" });
+        recordLoginFail(phone);
+        const entry = loginFailMap.get(phone);
+        const remaining = MAX_ATTEMPTS - (entry?.count || 0);
+        const msg = remaining > 0
+          ? `رقم الهاتف أو كلمة المرور غير صحيحة. تبقى ${remaining} محاولة`
+          : 'رقم الهاتف أو كلمة المرور غير صحيحة';
+        return res.status(401).json({ message: msg });
       }
+
+      // نجح الدخول — امسح سجل الفشل
+      clearLoginFail(phone);
       const { password: _, ...u } = user;
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
       res.json({ ...u, token });
