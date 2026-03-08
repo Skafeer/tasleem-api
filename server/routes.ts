@@ -83,6 +83,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ Support messages migration done');
   } catch (e) { console.log('Support migration note:', e); }
 
+  // ── Migration: تحديث جدول الشات ──
+  try {
+    await db.execute(`ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS image_url TEXT`);
+    await db.execute(`ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE`);
+    await db.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS support_blocked BOOLEAN NOT NULL DEFAULT FALSE`);
+    console.log('✅ Support updates migration done');
+  } catch (e) { console.log('Support updates migration note:', e); }
+
   // ── Products ──
   app.get("/api/products", async (req: any, res) => {
     try {
@@ -680,11 +688,24 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // التاجر يرسل رسالة
   app.post('/api/support/messages', requireAuth, async (req: any, res) => {
     try {
-      const { message } = req.body;
-      if (!message?.trim()) return res.status(400).json({ message: 'الرسالة فارغة' });
+      // التحقق من الحظر
+      const userResult = await db.execute(sql`SELECT support_blocked FROM users WHERE id = ${req.user.id}`);
+      const isBlocked = (userResult.rows[0] as any)?.support_blocked;
+      if (isBlocked) return res.status(403).json({ message: 'تم حظرك من إرسال الرسائل' });
+
+      const { message, imageUrl } = req.body;
+      if (!message?.trim() && !imageUrl) return res.status(400).json({ message: 'الرسالة فارغة' });
+
+      // فلترة الكلمات المسيئة
+      const BAD_WORDS = ['كلب', 'حمار', 'غبي', 'احمق', 'خنزير', 'عاهرة', 'شرموطة', 'منيوك', 'ابن الكلب'];
+      let filteredMsg = (message || '').trim();
+      for (const word of BAD_WORDS) {
+        filteredMsg = filteredMsg.replace(new RegExp(word, 'gi'), '***');
+      }
+
       await db.execute(sql`
-        INSERT INTO support_messages (user_id, from_admin, message)
-        VALUES (${req.user.id}, FALSE, ${message.trim()})
+        INSERT INTO support_messages (user_id, from_admin, message, image_url)
+        VALUES (${req.user.id}, FALSE, ${filteredMsg}, ${imageUrl || null})
       `);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
@@ -756,6 +777,46 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         WHERE user_id = ${req.user.id} AND from_admin = TRUE AND is_read = FALSE
       `);
       res.json({ count: Number((result.rows[0] as any)?.count || 0) });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // حظر/فك حظر تاجر من الشات
+  app.post('/api/admin/support/:userId/block', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const userId = Number(req.params.userId);
+      const { block } = req.body;
+      await db.execute(sql`UPDATE users SET support_blocked = ${block} WHERE id = ${userId}`);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // رفع صورة للشات عبر Cloudinary
+  app.post('/api/support/upload-image', requireAuth, async (req: any, res) => {
+    try {
+      const { imageBase64 } = req.body;
+      if (!imageBase64) return res.status(400).json({ message: 'لا توجد صورة' });
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+      const apiKey    = process.env.CLOUDINARY_API_KEY;
+      const apiSecret = process.env.CLOUDINARY_API_SECRET;
+      const timestamp = Math.round(Date.now() / 1000);
+      const crypto    = await import('crypto');
+      const signature = crypto.createHash('sha1')
+        .update(`folder=support&timestamp=${timestamp}${apiSecret}`)
+        .digest('hex');
+      const formData = new URLSearchParams();
+      formData.append('file', imageBase64);
+      formData.append('api_key', apiKey!);
+      formData.append('timestamp', String(timestamp));
+      formData.append('signature', signature);
+      formData.append('folder', 'support');
+      const response = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+        { method: 'POST', body: formData }
+      );
+      const data = await response.json() as any;
+      if (!data.secure_url) return res.status(500).json({ message: 'فشل رفع الصورة' });
+      res.json({ url: data.secure_url });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
