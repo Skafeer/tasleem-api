@@ -132,7 +132,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const merchantId = req.user.role === "admin" ? undefined : req.user.id;
       const page   = Math.max(1, Number(req.query.page)  || 1);
-      const limit  = Math.min(50, Number(req.query.limit) || 20);
+      const isAdmin = req.user.role === 'admin';
+      const limit  = isAdmin && Number(req.query.limit) >= 9999 ? 999999 : Math.min(50, Number(req.query.limit) || 20);
       const status = req.query.status as string | undefined;
       const search = req.query.search as string | undefined;
       const offset = (page - 1) * limit;
