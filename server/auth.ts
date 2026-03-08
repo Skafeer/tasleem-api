@@ -167,4 +167,46 @@ export function setupAuth(app: Express) {
       res.status(500).json({ message: err.message });
     }
   });
+
+  // Refresh Token — يجدد التوكن قبل انتهاء صلاحيته
+  app.post("/api/auth/refresh", requireAuth, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.id);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const { password: _, ...u } = user;
+      const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
+      res.json({ token });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Update Profile
+  app.patch("/api/auth/profile", requireAuth, async (req: any, res) => {
+    try {
+      const { storeName, phone, address, currentPassword, newPassword } = req.body;
+      const user = await storage.getUser(req.user.id);
+      if (!user) return res.status(404).json({ message: 'المستخدم غير موجود' });
+
+      if (newPassword) {
+        if (!currentPassword) return res.status(400).json({ message: 'يرجى إدخال كلمة المرور الحالية' });
+        const valid = await comparePasswords(currentPassword, user.password);
+        if (!valid) return res.status(400).json({ message: 'كلمة المرور الحالية غير صحيحة' });
+        const hashed = await hashPassword(newPassword);
+        await storage.updateUser(req.user.id, { password: hashed });
+        return res.json({ message: 'تم تغيير كلمة المرور بنجاح' });
+      }
+
+      const updates: any = {};
+      if (storeName) updates.storeName = storeName;
+      if (phone) updates.phone = phone;
+      if (address !== undefined) updates.address = address;
+      await storage.updateUser(req.user.id, updates);
+      const updated = await storage.getUser(req.user.id);
+      const { password: _, ...u } = updated!;
+      res.json(u);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
 }
