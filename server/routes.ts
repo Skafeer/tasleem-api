@@ -752,19 +752,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
     try {
       const userId = Number(req.params.userId);
-      const { message } = req.body;
-      if (!message?.trim()) return res.status(400).json({ message: 'الرسالة فارغة' });
+      const { message, imageUrl } = req.body;
+      if (!message?.trim() && !imageUrl) return res.status(400).json({ message: 'الرسالة فارغة' });
+      const msgText = message?.trim() || '';
       await db.execute(sql`
-        INSERT INTO support_messages (user_id, from_admin, message)
-        VALUES (${userId}, TRUE, ${message.trim()})
+        INSERT INTO support_messages (user_id, from_admin, message, image_url)
+        VALUES (${userId}, TRUE, ${msgText}, ${imageUrl || null})
       `);
       // إرسال push notification للتاجر
       try {
         const { sendPushNotification } = await import('./notifications');
+        const notifBody = msgText || '📷 صورة';
         await sendPushNotification({
           userIds: [userId],
           title: 'رسالة جديدة من الدعم',
-          body: message.trim().substring(0, 80),
+          body: notifBody.substring(0, 80),
           data: { type: 'support_message' },
         });
       } catch (_) {}
