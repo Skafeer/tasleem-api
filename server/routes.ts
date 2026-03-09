@@ -716,10 +716,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
     try {
       const result = await db.execute(sql`
-        SELECT sm.*, u.store_name, u.phone
+        SELECT sm.*, u.store_name, u.phone, u.support_blocked
         FROM support_messages sm
         JOIN users u ON u.id = sm.user_id
-        ORDER BY sm.created_at DESC
+        ORDER BY sm.created_at ASC
       `);
       // تجميع المحادثات حسب المستخدم
       const map: Record<number, any> = {};
@@ -729,18 +729,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             userId: row.user_id,
             storeName: row.store_name,
             phone: row.phone,
+            isBlocked: row.support_blocked,
             messages: [],
             unread: 0,
-            lastMessage: null,
           };
         }
         map[row.user_id].messages.push(row);
+        map[row.user_id].isBlocked = row.support_blocked;
         if (!row.from_admin && !row.is_read) map[row.user_id].unread++;
-        map[row.user_id].lastMessage = row;
       }
-      res.json(Object.values(map).sort((a: any, b: any) =>
-        new Date(b.lastMessage?.created_at).getTime() - new Date(a.lastMessage?.created_at).getTime()
-      ));
+      // ترتيب: الأحدث أعلى (آخر رسالة)
+      res.json(Object.values(map).sort((a: any, b: any) => {
+        const aLast = a.messages[a.messages.length - 1]?.created_at || 0;
+        const bLast = b.messages[b.messages.length - 1]?.created_at || 0;
+        return new Date(bLast).getTime() - new Date(aLast).getTime();
+      }));
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
