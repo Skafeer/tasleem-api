@@ -781,6 +781,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // حظر/فك حظر تاجر من الشات
+  // تصفير عداد الرسائل الغير مقروءة من الأدمن
+  app.post('/api/admin/support/:userId/read', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    try {
+      const userId = Number(req.params.userId);
+      await db.execute(sql`
+        UPDATE support_messages SET is_read = TRUE
+        WHERE user_id = ${userId} AND from_admin = FALSE AND is_read = FALSE
+      `);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   app.post('/api/admin/support/:userId/block', requireAuth, async (req: any, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
     try {
