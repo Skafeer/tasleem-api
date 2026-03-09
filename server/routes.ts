@@ -812,27 +812,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const { imageBase64 } = req.body;
       if (!imageBase64) return res.status(400).json({ message: 'لا توجد صورة' });
-      const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-      const apiKey    = process.env.CLOUDINARY_API_KEY;
-      const apiSecret = process.env.CLOUDINARY_API_SECRET;
-      const timestamp = Math.round(Date.now() / 1000);
-      const crypto    = await import('crypto');
-      const signature = crypto.createHash('sha1')
-        .update(`folder=support&timestamp=${timestamp}${apiSecret}`)
-        .digest('hex');
-      const formData = new URLSearchParams();
-      formData.append('file', imageBase64);
-      formData.append('api_key', apiKey!);
-      formData.append('timestamp', String(timestamp));
-      formData.append('signature', signature);
-      formData.append('folder', 'support');
-      const response = await fetch(
-        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-        { method: 'POST', body: formData }
-      );
-      const data = await response.json() as any;
-      if (!data.secure_url) return res.status(500).json({ message: 'فشل رفع الصورة' });
-      res.json({ url: data.secure_url });
+      const { v2: cloudinary } = await import('cloudinary');
+      cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET,
+      });
+      const result = await cloudinary.uploader.upload(imageBase64, {
+        folder: 'support',
+        transformation: [{ width: 800, height: 800, crop: 'limit' }, { quality: 'auto' }],
+      });
+      res.json({ url: result.secure_url });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
