@@ -33,7 +33,9 @@ export const storage = {
     return result[0];
   },
   async getAllUsers() {
-    return db.select().from(users);
+    const all = await db.select().from(users);
+    // ✅ إخفاء الباسورد من قائمة المستخدمين
+    return all.map(({ password, ...safe }: any) => safe);
   },
 
   async deleteUser(id: number) {

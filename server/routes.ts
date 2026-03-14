@@ -1,6 +1,30 @@
 import { Express, Request, Response } from "express";
 import { Server } from "http";
 import { setupAuth, requireAuth } from "./auth";
+
+// ✅ إخفاء البيانات الحساسة قبل إرسالها للعميل
+function sanitizeUser(user: any, isAdmin = false) {
+  if (!user) return null;
+  const { password, ...safe } = user;
+  if (!isAdmin) {
+    // التاجر ما يشوف هذي الحقول
+    const { companyWholesalePrice, isSuperAdmin, is_super_admin, permissions, ...merchant } = safe;
+    return merchant;
+  }
+  return safe;
+}
+
+// ✅ Validation helpers
+function validatePhone(phone: string) {
+  return /^07[0-9]{9}$/.test(phone?.trim());
+}
+function validateAmount(amount: any) {
+  const n = Number(amount);
+  return !isNaN(n) && n > 0 && n < 100_000_000;
+}
+function validateString(str: any, maxLen = 500) {
+  return typeof str === 'string' && str.trim().length > 0 && str.length <= maxLen;
+}
 import { setupUpload } from "./upload";
 import { storage } from "./storage";
 import { db } from "./db";
@@ -181,6 +205,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { items, customerName, customerPhone, province, address, notes, promoCode } = req.body;
       if (!items || !Array.isArray(items) || items.length === 0)
         return res.status(400).json({ message: "يجب إضافة منتج واحد على الأقل" });
+      if (items.length > 50)
+        return res.status(400).json({ message: "الحد الأقصى 50 منتج في الطلب" });
+      if (!validateString(customerName, 100))
+        return res.status(400).json({ message: "اسم الزبون غير صحيح" });
+      if (!validatePhone(customerPhone))
+        return res.status(400).json({ message: "رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم" });
+      if (!validateString(province, 50))
+        return res.status(400).json({ message: "المحافظة مطلوبة" });
+      if (!validateString(address, 500))
+        return res.status(400).json({ message: "العنوان مطلوب" });
 
       let totalAmount = 0, totalCost = 0, totalCompanyCost = 0;
       const enrichedItems = await Promise.all(items.map(async (item: any) => {
@@ -361,6 +395,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.post("/api/withdrawals", requireAuth, generalLimiter, async (req: any, res) => {
     try {
       const amt = Number(req.body.amount);
+      if (!validateAmount(amt))
+        return res.status(400).json({ message: 'مبلغ غير صحيح' });
       const freshUser = await storage.getUser(req.user.id);
       if (!amt || amt <= 0) return res.status(400).json({ message: "مبلغ غير صحيح" });
       if (amt > (freshUser?.balance || 0)) return res.status(400).json({ message: "رصيد غير كافٍ" });
@@ -412,15 +448,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // ✅ فقط الحقول المسموح للتاجر تعديلها
       const { storeName, phone, address, password } = req.body;
       const updateData: any = {};
-      if (storeName !== undefined) updateData.storeName = storeName;
-      if (phone     !== undefined) updateData.phone     = phone;
-      if (address   !== undefined) updateData.address   = address;
+      if (storeName !== undefined) {
+        if (!validateString(storeName, 100)) return res.status(400).json({ message: 'اسم المتجر غير صحيح' });
+        updateData.storeName = storeName.trim();
+      }
+      if (phone !== undefined) {
+        if (!validatePhone(phone)) return res.status(400).json({ message: 'رقم الهاتف غير صحيح' });
+        updateData.phone = phone.trim();
+      }
+      if (address !== undefined) {
+        if (!validateString(address, 300)) return res.status(400).json({ message: 'العنوان غير صحيح' });
+        updateData.address = address.trim();
+      }
       if (password  !== undefined && password.trim() !== '') {
         const bcrypt = await import('bcryptjs');
         updateData.password = await bcrypt.hash(password, 10);
       }
       // ❌ balance و role و merchantId محمية — التاجر ما يقدر يعدلها
-      res.json(await storage.updateUser(req.user.id, updateData));
+      const updated = await storage.updateUser(req.user.id, updateData);
+      res.json(sanitizeUser(updated));
     }
     catch (e: any) { res.status(500).json({ message: 'حدث خطأ' }); }
   });
