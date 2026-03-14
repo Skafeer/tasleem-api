@@ -3,11 +3,32 @@ import { registerRoutes } from "./routes";
 import { createServer } from "http";
 import { pool } from './db';
 import cors from "cors";
+import helmet from "helmet";
 
 const app = express();
 
+// ✅ Helmet — حماية HTTP headers
+app.use(helmet({
+  contentSecurityPolicy: false, // مطفي لأن API فقط
+}));
+
+// ✅ CORS — مقيّد بالدومينات المعروفة
+const ALLOWED_ORIGINS = [
+  'http://localhost:8081',
+  'http://localhost:19006',
+  'exp://',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 app.use(cors({
-  origin: true,
+  origin: (origin, callback) => {
+    // بدون origin = mobile app أو Postman
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.some(o => origin.startsWith(o as string))) {
+      return callback(null, true);
+    }
+    return callback(null, true); // مؤقتاً true — غيّره لـ false بعد الإطلاق
+  },
   credentials: true,
 }));
 

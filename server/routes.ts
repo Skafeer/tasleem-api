@@ -98,7 +98,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const activeOnly = req.query.activeOnly === 'true';
       res.json(activeOnly ? all.filter((p: any) => p.isActive !== false) : all);
     }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.get("/api/products/:id", async (req, res) => {
@@ -106,25 +106,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const p = await storage.getProduct(Number(req.params.id));
       if (!p) return res.status(404).json({ message: "المنتج غير موجود" });
       res.json(p);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post("/api/products", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try { res.status(201).json(await storage.createProduct(req.body)); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.put("/api/products/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try { res.json(await storage.updateProduct(Number(req.params.id), req.body)); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.delete("/api/products/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try { await storage.deleteProduct(Number(req.params.id)); res.json({ message: "تم الحذف" }); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Orders ──
@@ -163,7 +163,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         totalPages: Math.ceil(total / limit),
         hasMore: offset + limit < total,
       });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.get("/api/orders/:id", requireAuth, async (req: any, res) => {
@@ -173,7 +173,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (req.user.role !== "admin" && order.merchantId !== req.user.id)
         return res.status(403).json({ message: "غير مصرح" });
       res.json(order);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post("/api/orders", requireAuth, generalLimiter, async (req: any, res) => {
@@ -243,7 +243,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       res.status(201).json(order);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.patch("/api/orders/:id/status", requireAuth, async (req: any, res) => {
@@ -295,7 +295,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         });
       } catch (_) {}
       res.json(updated);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
 
@@ -334,7 +334,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await storage.updateOrder(orderId, updateData);
       const fresh = await storage.getOrder(orderId);
       res.json(fresh);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Delete Order (Admin) ──
@@ -347,7 +347,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await db.delete(orderItems).where(eq(orderItems.orderId, orderId));
       await db.delete(orders).where(eq(orders.id, orderId));
       res.json({ message: "تم حذف الطلب" });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Withdrawals ──
@@ -355,7 +355,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const merchantId = req.user.role === "admin" ? undefined : req.user.id;
       res.json(await storage.getWithdrawals(merchantId));
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post("/api/withdrawals", requireAuth, generalLimiter, async (req: any, res) => {
@@ -372,7 +372,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
       await storage.updateUser(req.user.id, { balance: (freshUser?.balance || 0) - amt });
       res.status(201).json(w);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.patch("/api/withdrawals/:id", requireAuth, async (req: any, res) => {
@@ -403,20 +403,33 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         });
       } catch (_) {}
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Profile ──
   app.patch("/api/auth/profile", requireAuth, async (req: any, res) => {
-    try { res.json(await storage.updateUser(req.user.id, req.body)); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    try {
+      // ✅ فقط الحقول المسموح للتاجر تعديلها
+      const { storeName, phone, address, password } = req.body;
+      const updateData: any = {};
+      if (storeName !== undefined) updateData.storeName = storeName;
+      if (phone     !== undefined) updateData.phone     = phone;
+      if (address   !== undefined) updateData.address   = address;
+      if (password  !== undefined && password.trim() !== '') {
+        const bcrypt = await import('bcryptjs');
+        updateData.password = await bcrypt.hash(password, 10);
+      }
+      // ❌ balance و role و merchantId محمية — التاجر ما يقدر يعدلها
+      res.json(await storage.updateUser(req.user.id, updateData));
+    }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ' }); }
   });
 
   // ── Admin Users ──
   app.get("/api/admin/users", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try { res.json(await storage.getAllUsers()); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.patch("/api/admin/users/:id", requireAuth, async (req: any, res) => {
@@ -435,7 +448,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
       const updated = await storage.updateUser(userId, updateData);
       res.json(updated);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.delete("/api/admin/users/:id", requireAuth, async (req: any, res) => {
@@ -443,7 +456,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       await storage.deleteUser(Number(req.params.id));
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
 
@@ -451,7 +464,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/promo-codes", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try { res.json(await db.select().from(promoCodes)); }
-    catch (e: any) { res.status(500).json({ message: e.message }); }
+    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post("/api/promo-codes", requireAuth, async (req: any, res) => {
@@ -461,7 +474,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         .values({ code: req.body.code.toUpperCase(), discountPercent: Number(req.body.discountPercent), isActive: true })
         .returning();
       res.status(201).json(result[0]);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.delete("/api/promo-codes/:id", requireAuth, async (req: any, res) => {
@@ -469,7 +482,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       await db.delete(promoCodes).where(eq(promoCodes.id, Number(req.params.id)));
       res.json({ message: "تم الحذف" });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
 
@@ -483,7 +496,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (isActive !== undefined) updateData.isActive = isActive;
       const result = await db.update(promoCodes).set(updateData).where(eq(promoCodes.id, Number(req.params.id))).returning();
       res.json(result[0]);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post("/api/promo-codes/verify", async (req, res) => {
@@ -491,7 +504,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const result = await db.select().from(promoCodes).where(eq(promoCodes.code, req.body.code.toUpperCase()));
       if (!result[0]?.isActive) return res.status(404).json({ message: "كود غير صحيح أو منتهي الصلاحية" });
       res.json({ discountPercent: result[0].discountPercent });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
 
@@ -500,7 +513,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const result = await db.select().from(banners).orderBy(banners.sortOrder);
       res.json(result);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post('/api/banners', requireAuth, async (req: any, res) => {
@@ -508,7 +521,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const result = await db.insert(banners).values(req.body).returning();
       res.json(result[0]);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.patch('/api/banners/:id', requireAuth, async (req: any, res) => {
@@ -523,7 +536,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (sortOrder  !== undefined) updateData.sortOrder  = Number(sortOrder);
       const result = await db.update(banners).set(updateData).where(eq(banners.id, Number(req.params.id))).returning();
       res.json(result[0]);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.delete('/api/banners/:id', requireAuth, async (req: any, res) => {
@@ -531,7 +544,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       await db.delete(banners).where(eq(banners.id, Number(req.params.id)));
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
 
@@ -541,7 +554,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const result = await db.execute(`SELECT * FROM push_tokens`);
       res.json(result.rows);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Notifications Routes ──
@@ -552,21 +565,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!token) return res.status(400).json({ message: 'token مطلوب' });
       await db.execute(sql`INSERT INTO push_tokens (user_id, token) VALUES (${req.user.id}, ${token}) ON CONFLICT (token) DO UPDATE SET user_id = ${req.user.id}`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.get('/api/notifications', requireAuth, async (req: any, res) => {
     try {
       const result = await db.execute(sql`SELECT * FROM notifications WHERE user_id = ${req.user.id} OR user_id IS NULL ORDER BY created_at DESC LIMIT 50`);
       res.json(result.rows);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.patch('/api/notifications/read-all', requireAuth, async (req: any, res) => {
     try {
       await db.execute(sql`UPDATE notifications SET is_read = TRUE WHERE user_id = ${req.user.id}`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post('/api/notifications/broadcast', requireAuth, broadcastLimiter, async (req: any, res) => {
@@ -577,7 +590,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { sendBroadcastNotification } = await import('./notifications');
       await sendBroadcastNotification({ title, body });
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ══════════════════════════════════════════
@@ -590,7 +603,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const result = await db.execute(sql`SELECT id, store_name, phone, merchant_id, is_super_admin, permissions, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC`);
       res.json(result.rows);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // إضافة أدمن جديد (superAdmin فقط)
@@ -603,7 +616,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const permsJson = JSON.stringify(permissions || []);
       await db.execute(sql`UPDATE users SET role = 'admin', is_super_admin = FALSE, permissions = ${permsJson} WHERE id = ${userId} AND role = 'merchant'`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // تحويل أدمن لتاجر
@@ -614,7 +627,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (adminId === req.user.id) return res.status(400).json({ message: 'لا يمكنك تحويل حسابك' });
       await db.execute(sql`UPDATE users SET role = 'merchant', is_super_admin = FALSE, permissions = '[]' WHERE id = ${adminId} AND is_super_admin = FALSE`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // تعديل صلاحيات أدمن (superAdmin فقط)
@@ -626,7 +639,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const permsJson = JSON.stringify(permissions || []);
       await db.execute(sql`UPDATE users SET permissions = ${permsJson} WHERE id = ${adminId} AND role = 'admin' AND is_super_admin = FALSE`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // حذف أدمن (superAdmin فقط)
@@ -637,7 +650,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (adminId === req.user.id) return res.status(400).json({ message: 'لا يمكنك حذف حسابك' });
       await db.execute(sql`DELETE FROM users WHERE id = ${adminId} AND role = 'admin' AND is_super_admin = FALSE`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Favorites Routes ──
@@ -646,7 +659,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const favs = await storage.getFavorites(req.user.id);
       const productIds = favs.map((f: any) => f.productId);
       res.json(productIds);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post('/api/favorites/:productId', requireAuth, async (req: any, res) => {
@@ -654,7 +667,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const productId = Number(req.params.productId);
       await storage.addFavorite(req.user.id, productId);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.delete('/api/favorites/:productId', requireAuth, async (req: any, res) => {
@@ -662,7 +675,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const productId = Number(req.params.productId);
       await storage.removeFavorite(req.user.id, productId);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ══════════════════════════════════════════
@@ -682,7 +695,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         WHERE user_id = ${req.user.id} AND from_admin = TRUE AND is_read = FALSE
       `);
       res.json(result.rows);
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // التاجر يرسل رسالة
@@ -708,7 +721,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         VALUES (${req.user.id}, FALSE, ${filteredMsg}, ${imageUrl || null})
       `);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // الأدمن يجلب كل المحادثات
@@ -744,7 +757,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         const bLast = b.messages[b.messages.length - 1]?.created_at || 0;
         return new Date(bLast).getTime() - new Date(aLast).getTime();
       }));
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // الأدمن يرد على محادثة تاجر
@@ -771,7 +784,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         });
       } catch (_) {}
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // عدد الرسائل غير المقروءة للتاجر
@@ -782,7 +795,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         WHERE user_id = ${req.user.id} AND from_admin = TRUE AND is_read = FALSE
       `);
       res.json({ count: Number((result.rows[0] as any)?.count || 0) });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // حظر/فك حظر تاجر من الشات
@@ -796,7 +809,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         WHERE user_id = ${userId} AND from_admin = FALSE AND is_read = FALSE
       `);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   app.post('/api/admin/support/:userId/block', requireAuth, async (req: any, res) => {
@@ -806,7 +819,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { block } = req.body;
       await db.execute(sql`UPDATE users SET support_blocked = ${block} WHERE id = ${userId}`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // رفع صورة للشات عبر Cloudinary
@@ -825,7 +838,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         transformation: [{ width: 800, height: 800, crop: 'limit' }, { quality: 'auto' }],
       });
       res.json({ url: result.secure_url });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   // ── Stats endpoint مخصص ──
@@ -840,7 +853,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const usersResult = await db.execute(sql`SELECT * FROM users`);
       const users = usersResult.rows;
       res.json({ orders, users, withdrawals, products });
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
   return httpServer;

@@ -17,7 +17,19 @@ export const storage = {
     return result[0];
   },
   async updateUser(id: number, data: any) {
-    const result = await db.update(users).set(data).where(eq(users.id, id)).returning();
+    // ✅ whitelist — فقط الحقول المسموحة تُحدَّث
+    const ALLOWED: (keyof typeof data)[] = [
+      'storeName', 'phone', 'address', 'password',
+      'balance', 'role', 'isActive', 'permissions',
+      'isSuperAdmin', 'is_super_admin', 'merchantId',
+      'pushToken', 'supportBlocked',
+    ];
+    const safe: any = {};
+    for (const key of ALLOWED) {
+      if (key in data) safe[key] = data[key];
+    }
+    if (Object.keys(safe).length === 0) return storage.getUser(id);
+    const result = await db.update(users).set(safe).where(eq(users.id, id)).returning();
     return result[0];
   },
   async getAllUsers() {
