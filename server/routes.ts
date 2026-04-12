@@ -526,16 +526,16 @@ res.status(201).json(order);
 
 
 app.patch("/api/orders/:id/status", requireAuth, async (req: any, res) => {
-
 if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
-
 try {
+  const VALID_STATUSES = ['pending','processing','preparing','shipping','delivered','cancelled','returned','postponed'];
+  if (!VALID_STATUSES.includes(req.body.status))
+    return res.status(400).json({ message: 'حالة غير صحيحة' });
 
-const order = await storage.getOrder(Number(req.params.id));
+  const order = await storage.getOrder(Number(req.params.id));
+  if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
 
-if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
-
-const updated = await storage.updateOrder(Number(req.params.id), { status: req.body.status });
+  const updated = await storage.updateOrder(Number(req.params.id), { status: req.body.status });
 
 if (req.body.status === "delivered" && order.status !== "delivered") {
 
@@ -745,39 +745,29 @@ res.json(await storage.getWithdrawals(merchantId));
 
 
 app.post("/api/withdrawals", requireAuth, generalLimiter, async (req: any, res) => {
-
 try {
+  const amt = Number(req.body.amount);
+  if (!validateAmount(amt))
+    return res.status(400).json({ message: 'مبلغ غير صحيح' });
 
-const amt = Number(req.body.amount);
+  // ✅ FIX: Atomic balance deduction - prevents race condition
+  const updateResult = await db.execute(
+    sql`UPDATE users SET balance = balance - ${amt} WHERE id = ${req.user.id} AND balance >= ${amt} RETURNING balance`
+  );
 
-if (!validateAmount(amt))
+  if (!updateResult.rows || updateResult.rows.length === 0) {
+    return res.status(400).json({ message: 'رصيد غير كافٍ' });
+  }
 
-return res.status(400).json({ message: 'مبلغ غير صحيح' });
+  const w = await storage.createWithdrawal({
+    merchantId: req.user.id, amount: amt,
+    method: req.body.method || "manual",
+    accountDetails: req.body.accountDetails || "",
+    status: "pending",
+  });
 
-const freshUser = await storage.getUser(req.user.id);
-
-if (!amt || amt <= 0) return res.status(400).json({ message: "مبلغ غير صحيح" });
-
-if (amt > (freshUser?.balance || 0)) return res.status(400).json({ message: "رصيد غير كافٍ" });
-
-const w = await storage.createWithdrawal({
-
-merchantId: req.user.id, amount: amt,
-
-method: req.body.method || "manual",
-
-accountDetails: req.body.accountDetails || "",
-
-status: "pending",
-
-});
-
-await storage.updateUser(req.user.id, { balance: (freshUser?.balance || 0) - amt });
-
-res.status(201).json(w);
-
+  res.status(201).json(w);
 } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
-
 });
 
 
@@ -1038,7 +1028,7 @@ res.json(result[0]);
 });
 
 
-app.post("/api/promo-codes/verify", async (req, res) => {
+app.post("/api/promo-codes/verify", generalLimiter, async (req, res) => {
 
 try {
 
@@ -1167,15 +1157,14 @@ res.json({ success: true });
 
 
 app.get('/api/notifications', requireAuth, async (req: any, res) => {
-
 try {
-
-const result = await db.execute(sql`SELECT * FROM notifications WHERE user_id = ${req.user.id} OR user_id IS NULL ORDER BY created_at DESC LIMIT 50`);
-
-res.json(result.rows);
-
+  // ✅ FIX: الأدمن يشوف البرودكاست فقط — التاجر يشوف إشعاراته + البرودكاست
+  const isAdmin = req.user.role === 'admin';
+  const result = isAdmin
+    ? await db.execute(sql`SELECT * FROM notifications WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 50`)
+    : await db.execute(sql`SELECT * FROM notifications WHERE user_id = ${req.user.id} OR user_id IS NULL ORDER BY created_at DESC LIMIT 50`);
+  res.json(result.rows);
 } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
-
 });
 
 
@@ -1706,9 +1695,8 @@ storage.getProducts(),
 
 ]);
 
-const usersResult = await db.execute(sql`SELECT * FROM users`);
-
-const users = usersResult.rows;
+const usersResult = await db.execute(sql`SELECT id, store_name, phone, merchant_id, role, balance, pending_balance, is_active, created_at FROM users`);
+  const users = usersResult.rows;
 
 res.json({ orders, users, withdrawals, products });
 
