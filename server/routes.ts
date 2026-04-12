@@ -538,21 +538,13 @@ try {
   const updated = await storage.updateOrder(Number(req.params.id), { status: req.body.status });
 
 if (req.body.status === "delivered" && order.status !== "delivered") {
-
-const merchant = await storage.getUser(order.merchantId);
-
-if (merchant) {
-
-await storage.updateUser(merchant.id, {
-
-pendingBalance: Math.max(0, (merchant.pendingBalance || 0) - order.totalProfit),
-
-balance: (merchant.balance || 0) + order.totalProfit,
-
-});
-
-}
-
+  // ✅ Fix: Atomic update لمنع race condition
+  await db.execute(
+    sql`UPDATE users
+        SET balance = balance + ${order.totalProfit},
+            pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
+        WHERE id = ${order.merchantId}`
+  );
 }
 
 // ✅ اذا مرتجع — رجع المخزون
@@ -924,7 +916,7 @@ if (balance !== undefined) updateData.balance = Number(balance);
 
 if (password !== undefined && password.trim() !== "") {
 
-const bcrypt = await import("bcrypt");
+const bcrypt = await import("bcryptjs");
 
 updateData.password = await bcrypt.hash(password, 10);
 
@@ -1119,21 +1111,7 @@ res.json({ success: true });
 
 
 
-// ── Debug: get all push tokens ──
-
-app.get('/api/push-tokens-debug', requireAuth, async (req: any, res) => {
-
-if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
-
-try {
-
-const result = await db.execute(`SELECT * FROM push_tokens`);
-
-res.json(result.rows);
-
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
-
-});
+// ── push-tokens-debug removed for security ──
 
 
 // ── Notifications Routes ──
@@ -1649,6 +1627,12 @@ try {
 const { imageBase64 } = req.body;
 
 if (!imageBase64) return res.status(400).json({ message: 'لا توجد صورة' });
+
+// ✅ Fix: حد حجم الصورة 5MB
+const base64SizeBytes = Buffer.byteLength(imageBase64, 'base64');
+if (base64SizeBytes > 5 * 1024 * 1024) {
+  return res.status(400).json({ message: 'حجم الصورة يجب أن لا يتجاوز 5MB' });
+}
 
 const { v2: cloudinary } = await import('cloudinary');
 

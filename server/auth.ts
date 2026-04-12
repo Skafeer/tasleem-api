@@ -7,7 +7,10 @@ import { storage } from "./storage";
 import jwt from "jsonwebtoken";
 
 const scryptAsync = promisify(scrypt);
-const JWT_SECRET = process.env.SESSION_SECRET || "tasleem_secret_2026";
+if (!process.env.SESSION_SECRET) {
+  throw new Error("SESSION_SECRET environment variable is required");
+}
+const JWT_SECRET = process.env.SESSION_SECRET;
 
 // ── Rate Limiter عام (IP) ──
 const authRateMap = new Map<string, { count: number; resetAt: number }>();

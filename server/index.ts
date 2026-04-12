@@ -27,7 +27,7 @@ app.use(cors({
     if (ALLOWED_ORIGINS.some(o => origin.startsWith(o as string))) {
       return callback(null, true);
     }
-    return callback(null, true); // مؤقتاً true — غيّره لـ false بعد الإطلاق
+    return callback(new Error('Not allowed by CORS'), false);
   },
   credentials: true,
 }));
