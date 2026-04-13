@@ -20,7 +20,7 @@ export const storage = {
     // ✅ whitelist — فقط الحقول المسموحة تُحدَّث
     const ALLOWED: (keyof typeof data)[] = [
       'storeName', 'phone', 'address', 'password',
-      'balance', 'role', 'isActive', 'permissions',
+      'balance', 'pendingBalance', 'role', 'isActive', 'permissions',
       'isSuperAdmin', 'is_super_admin', 'merchantId',
       'pushToken', 'supportBlocked',
     ];
