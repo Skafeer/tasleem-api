@@ -103,7 +103,16 @@ export function setupAuth(app: Express) {
   app.post("/api/auth/register", authRateLimit, async (req, res) => {
     try {
       const { phone, password, storeName, address } = req.body;
-      const existing = await storage.getUserByPhone(phone);
+
+      // ✅ Validation
+      if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
+        return res.status(400).json({ message: 'رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم' });
+      if (!password || password.trim().length < 6)
+        return res.status(400).json({ message: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+      if (!storeName || storeName.trim().length < 2 || storeName.trim().length > 100)
+        return res.status(400).json({ message: 'اسم المتجر يجب أن يكون بين 2 و 100 حرف' });
+
+      const existing = await storage.getUserByPhone(phone.trim());
       if (existing) return res.status(400).json({ message: "رقم الهاتف مسجل مسبقاً" });
       const merchantId = `TSL-${Date.now().toString(36).toUpperCase()}`;
       const user = await storage.createUser({
@@ -115,7 +124,7 @@ export function setupAuth(app: Express) {
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
       res.status(201).json({ ...u, token });
     } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
@@ -150,7 +159,7 @@ export function setupAuth(app: Express) {
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
       res.json({ ...u, token });
     } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
@@ -167,7 +176,7 @@ export function setupAuth(app: Express) {
       const { password: _, ...u } = user;
       res.json(u);
     } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
@@ -180,7 +189,7 @@ export function setupAuth(app: Express) {
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
       res.json({ token });
     } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
@@ -209,7 +218,7 @@ export function setupAuth(app: Express) {
       const { password: _, ...u } = updated!;
       res.json(u);
     } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 }

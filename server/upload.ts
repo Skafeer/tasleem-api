@@ -9,7 +9,16 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 }, // ✅ حد 8MB
+  fileFilter: (_req, file, cb) => {
+    // ✅ فقط صور مسموحة
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('نوع الملف غير مسموح، يجب أن يكون صورة'));
+  },
+});
 
 export function setupUpload(app: Express) {
   app.post("/api/upload", requireAuth, async (req: any, res) => {
@@ -34,7 +43,7 @@ export function setupUpload(app: Express) {
       res.json({ url: result.secure_url, public_id: result.public_id });
     } catch (e: any) {
       console.error("Upload error:", e);
-      res.status(500).json({ message: e.message || "فشل رفع الصورة" });
+      res.status(500).json({ message: 'فشل رفع الصورة' });
     }
   });
 
@@ -47,7 +56,7 @@ export function setupUpload(app: Express) {
       await cloudinary.uploader.destroy(req.params.publicId);
       res.json({ message: "تم حذف الصورة" });
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 }
