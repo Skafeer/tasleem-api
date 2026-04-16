@@ -9,7 +9,6 @@ export const saqrAssistant = {
   analyzeProduct: async (identifier: string, merchantId: number) => {
     try {
       const productId = parseInt(identifier.replace(/[^0-9]/g, ""));
-      if (isNaN(productId)) return "عيني، اكتبلي كود المنتج بشكل صحيح (مثلاً #123).";
 
       const product = await db.query.products.findFirst({ where: eq(products.id, productId) });
       if (!product) return "دورت بكل المخازن وما لكيت هذا المنتج. تأكد من الكود عيوني؟";
