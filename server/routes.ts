@@ -137,7 +137,7 @@ setupAuth(app);
 setupUpload(app);
 
 		// ── Saqr AI Assistant ──
-		app.post("/api/saqr/analyze", requireAuth, async (req: any, res) => {
+		app.post("/api/saqr/analyze", requireAuth, generalLimiter, async (req: any, res) => {
 			try {
 				const { identifier } = req.body;
 				if (!identifier) return res.status(400).json({ message: "يرجى تزويد كود المنتج أو اسمه" });
