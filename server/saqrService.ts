@@ -42,7 +42,7 @@ export const saqrAssistant = {
         الاسم: ${product.name}, الجملة: ${product.wholesalePrice}, المقترح: ${product.suggestedPrice}, المخزون: ${product.stock}, مبيعات التاجر: ${totalSold}.
         المطلوب: تحليل الربح، تنبيه المخزون، كتابة بوست إعلاني جذاب، ونصيحة استهداف للمحافظات.`;
 
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
       const result = await model.generateContent(prompt);
       return result.response.text();
     } catch (error) {
