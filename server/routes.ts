@@ -2,6 +2,7 @@ import { saqrAssistant } from "./saqrService";
 import { Express, Request, Response } from "express";
 import { Server } from "http";
 import { setupAuth, requireAuth } from "./auth";
+const saqrLimiter = rateLimit(10, 60_000); // 10 طلبات/دقيقة فقط
 
 
 // ✅ إخفاء البيانات الحساسة قبل إرسالها للعميل
@@ -137,7 +138,7 @@ setupAuth(app);
 setupUpload(app);
 
 		// ── Saqr AI Assistant ──
-		app.post("/api/saqr/analyze", requireAuth, generalLimiter, async (req: any, res) => {
+		app.post("/api/saqr/analyze", requireAuth, saqrLimiter, async (req: any, res) => {
 			try {
 				const { identifier } = req.body;
 				if (!identifier) return res.status(400).json({ message: "يرجى تزويد كود المنتج أو اسمه" });
