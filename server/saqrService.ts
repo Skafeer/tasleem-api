@@ -10,7 +10,7 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 // ✅ الموديل الصحيح الموثق من Google
-const GEMINI_MODEL = "gemini-1.5-pro";
+const GEMINI_MODEL = "models/gemini-2.5-flash";
 
 export const saqrAssistant = {
   analyzeProduct: async (identifier: string, merchantId: number) => {
