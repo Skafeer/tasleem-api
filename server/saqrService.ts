@@ -9,7 +9,7 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const GEMINI_MODEL = "models/gemini-2.5-flash";
+const GEMINI_MODEL = "models/gemini-1.5-flash";
 
 export const saqrAssistant = {
   analyzeProduct: async (identifier: string) => {
