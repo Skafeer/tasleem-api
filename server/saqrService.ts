@@ -8,8 +8,6 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-
-// ✅ الموديل الصحيح الموثق من Google
 const GEMINI_MODEL = "models/gemini-2.5-flash";
 
 export const saqrAssistant = {
@@ -27,8 +25,7 @@ export const saqrAssistant = {
     try {
       let product: any;
 
-      // ✅ FIX 1: منطق البحث الصحيح
-      // فقط إذا الـ identifier كله أرقام → ابحث بالـ ID
+      // البحث بالـ ID إذا كان المدخل أرقاماً فقط
       const numericOnly = cleanIdentifier.replace(/[^0-9]/g, "");
       if (numericOnly === cleanIdentifier && numericOnly.length > 0) {
         const productId = parseInt(numericOnly);
@@ -38,8 +35,7 @@ export const saqrAssistant = {
         }
       }
 
-      // ابحث بالاسم دائماً إذا ما لكى بالـ ID
-      // (يشمل: أسماء عربية، أكواد مثل R50i، هاشتاق مثل #Y0WDQ)
+      // البحث بالاسم إذا لم يتم العثور عليه بالـ ID
       if (!product) {
         const r = await db
           .select()
@@ -50,10 +46,10 @@ export const saqrAssistant = {
       }
 
       if (!product) {
-        return `ما لكيت منتج باسم أو كود "${cleanIdentifier}" 🔍\n\nتأكد من:\n• كتابة اسم المنتج بالعربي كما يظهر في التطبيق\n• أو رقم المنتج الرقمي فقط (مثل: 42)\n\nمثال: "سماعة أنكر" أو "15"`;
+        return `ما لكيت منتج باسم أو كود "${cleanIdentifier}" 🔍\n\nتأكد من:\n- كتابة اسم المنتج بالعربي كما يظهر في التطبيق\n- أو رقم المنتج الرقمي فقط (مثل: 42)\n\nمثال: "سماعة أنكر" أو "15"`;
       }
 
-      // ── إحصائيات مبيعات التاجر ──
+      // إحصائيات مبيعات التاجر
       const salesStats = await db
         .select({
           totalSold:   sql<number>`coalesce(sum(${orderItems.quantity}), 0)`,
@@ -76,34 +72,39 @@ export const saqrAssistant = {
         ? ((profit / product.wholesalePrice) * 100).toFixed(1)
         : "0";
 
+      // البرومبت الجديد: مباشر، عملي، بدون نجوم، ومقسم بوضوح
       const prompt = `أنت "صقر" 🦅، مساعد منصة "تسليم" للدروب شوبينج في العراق.
-جاوب بالعراقي الصريح، منظم، وعملي. استخدم إيموجيات خفيفة.
+مهمتك إعطاء التاجر "الزبدة" بلهجة عراقية عملية ومباشرة.
+ممنوع منعاً باتاً استخدام علامة النجمة (*) في الرد. استخدم الشرطة (-) للقوائم.
 
-📦 بيانات المنتج:
-- الاسم: ${product.name}
-- سعر الجملة (يدفعه التاجر): ${(product.wholesalePrice || 0).toLocaleString()} د.ع
-- السعر المقترح للبيع: ${(product.suggestedPrice || 0).toLocaleString()} د.ع
-- أدنى سعر بيع مسموح: ${(product.sellingPriceMin || 0).toLocaleString()} د.ع
-- الربح المتوقع بالسعر المقترح: ${profit.toLocaleString()} د.ع (${profitMargin}%)
-- المخزون المتوفر: ${product.stock} قطعة
-- التصنيف: ${product.category || "عام"}
-${product.discount > 0 ? `- خصم حالي على الجملة: ${product.discount}%` : ""}
+بيانات المنتج:
+الاسم: ${product.name}
+سعر الجملة: ${(product.wholesalePrice || 0).toLocaleString()} د.ع
+السعر المقترح: ${(product.suggestedPrice || 0).toLocaleString()} د.ع
+الربح المتوقع: ${profit.toLocaleString()} د.ع (${profitMargin}%)
+المخزون: ${product.stock} قطعة
+مبيعات التاجر من هذا المنتج: ${totalSold} قطعة
 
-📊 أداء التاجر مع هذا المنتج:
-- عدد الطلبات: ${totalOrders} طلب
-- إجمالي المبيع: ${totalSold} قطعة
+اكتب الرد مقسماً إلى 4 أقسام واضحة ومفصولة بأسطر فارغة كالتالي:
 
-المطلوب منك بالترتيب:
-1. 💰 تحليل الربح: هل يستاهل؟ وكم الربح الفعلي؟
-2. 📦 حالة المخزون: تنبيه إذا قليل أو كافي
-3. 📱 بوست إعلاني جاهز للنسخ على السوشيال ميديا (للعراق)
-4. 🗺️ نصيحة: أي محافظات عراقية تستهدف وليش؟
+الربح والمبيعات 💰
+(اكتب سطرين مباشرين عن قيمة الربح وهل هو مجدي، مع ذكر مبيعات التاجر السابقة إذا وجدت)
 
-والأهم من هذا كله ان تكتب الرد دون استخدم *`;
+حالة المخزون 📦
+(سطر واحد يوضح هل المخزون كافي أم يحتاج استعجال بالبيع)
+
+نصيحة الاستهداف 🎯
+(سطرين عن أفضل المحافظات العراقية لاستهدافها لهذا المنتج ولماذا)
+
+البوست الإعلاني 📱
+(اكتب بوست جاهز للنسخ، جذاب، باللهجة العراقية، مع إيموجيات مناسبة، بدون ذكر سعر الجملة نهائياً، اذكر السعر المقترح فقط إذا لزم الأمر)`;
 
       const model  = genAI.getGenerativeModel({ model: GEMINI_MODEL });
       const result = await model.generateContent(prompt);
-      const text   = result.response.text();
+      let text   = result.response.text();
+
+      // تنظيف إضافي للتأكد من إزالة أي نجوم قد يولدها الموديل بالخطأ
+      text = text.replace(/\*/g, '');
 
       if (!text || text.trim().length === 0) {
         return "صقر ما رد بشي، حاول مرة ثانية عيوني.";
@@ -112,20 +113,7 @@ ${product.discount > 0 ? `- خصم حالي على الجملة: ${product.disco
       return text;
 
     } catch (error: any) {
-      const msg = error?.message || String(error);
-      console.error("Saqr error:", msg);
-
-      if (msg.includes("404") || msg.includes("not found") || msg.includes("MODEL")) {
-        console.error("❌ Gemini model error:", GEMINI_MODEL, msg);
-        return "خلل في موديل الذكاء الاصطناعي، تواصل مع المطور.";
-      }
-      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
-        return "مفتاح Gemini منتهي أو غلط، تواصل مع المطور.";
-      }
-      if (msg.includes("quota") || msg.includes("429") || msg.includes("rate")) {
-        return "صقر مشغول هسه، انتظر دقيقة وحاول مرة ثانية.";
-      }
-
+      console.error("Saqr error:", error?.message || String(error));
       return "صار عندي خلل فني بسيط، حاول مرة ثانية عيوني.";
     }
   },
