@@ -12,7 +12,7 @@ if (!process.env.GEMINI_API_KEY) {
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 // تصحيح اسم النموذج إلى الإصدار المستقر 1.5
-const GEMINI_MODEL = "gemini-1.5-flash";
+const GEMINI_MODEL = "models/gemini-1.5-flash";
 
 export const saqrAssistant = {
   analyzeProduct: async (identifier: string, merchantId: number) => {
@@ -124,7 +124,7 @@ ${totalOrders === 0
 - شنو الفئة المستهدفة الأنسب له؟ (عمر، اهتمام، جنس)
 
 نصيحة الاستهداف 🗺️
-- 3 محافظات فقط مع سبب واحد لكل محافظة
+- 5 محافظات فقط مع سبب واحد لكل محافظة
 
 البوست الإعلاني 📱
 - جاهز للنسخ والنشر فوراً
