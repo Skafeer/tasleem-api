@@ -3,12 +3,16 @@ import { products, orders, orderItems } from "@shared/schema";
 import { eq, sql, and, ilike } from "drizzle-orm";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// وظيفة للانتظار قبل إعادة المحاولة
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
 if (!process.env.GEMINI_API_KEY) {
   console.warn("⚠️  GEMINI_API_KEY is not set - Saqr AI will not work");
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const GEMINI_MODEL = "models/gemini-2.5-flash";
+// تصحيح اسم النموذج إلى الإصدار المستقر 1.5
+const GEMINI_MODEL = "models/gemini-1.5-flash";
 
 export const saqrAssistant = {
   analyzeProduct: async (identifier: string, merchantId: number) => {
@@ -129,22 +133,45 @@ ${totalOrders === 0
 - اذكر السعر المقترح بشكل جذاب
 - أضف هاشتاقات عراقية مناسبة في النهاية`;
 
-      const model  = genAI.getGenerativeModel({
-        model: GEMINI_MODEL,
-        systemInstruction: systemPrompt,
-      });
+      // ── منطق إعادة المحاولة (Retry Logic) ──
+      const MAX_RETRIES = 3;
+      let lastError: any;
 
-      const result = await model.generateContent(userPrompt);
-      let text = result.response.text();
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const model = genAI.getGenerativeModel({
+            model: GEMINI_MODEL,
+            systemInstruction: systemPrompt,
+          });
 
-      // تنظيف النجوم
-      text = text.replace(/\*/g, "");
+          const result = await model.generateContent(userPrompt);
+          let text = result.response.text();
 
-      if (!text || text.trim().length === 0) {
-        return "صقر ما رد بشي، حاول مرة ثانية عيوني.";
+          // تنظيف النجوم
+          text = text.replace(/\*/g, "");
+
+          if (!text || text.trim().length === 0) {
+            throw new Error("EMPTY_RESPONSE");
+          }
+
+          return text; // نجح الطلب، نرجع النص فوراً
+
+        } catch (error: any) {
+          lastError = error;
+          const msg = error?.message || String(error);
+          
+          // إذا كان الخطأ بسبب الضغط (Rate Limit) نحاول مرة ثانية
+          if ((msg.includes("quota") || msg.includes("429") || msg.includes("rate")) && attempt < MAX_RETRIES) {
+            console.log(`صقر مشغول.. محاولة رقم ${attempt} من ${MAX_RETRIES}. سأنتظر 2 ثانية...`);
+            await sleep(2000); // انتظر ثانيتين قبل إعادة المحاولة
+            continue;
+          }
+          break; // إذا كان خطأ آخر أو انتهت المحاولات نخرج من الحلقة
+        }
       }
 
-      return text;
+      // إذا وصلنا هنا يعني فشلت كل المحاولات، نرمي الخطأ ليعالجه الـ catch الخارجي
+      throw lastError;
 
     } catch (error: any) {
       const msg = error?.message || String(error);
