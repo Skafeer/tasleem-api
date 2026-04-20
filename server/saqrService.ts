@@ -25,7 +25,6 @@ export const saqrAssistant = {
     try {
       let product: any;
 
-      // البحث بالـ ID إذا كان المدخل أرقاماً فقط
       const numericOnly = cleanIdentifier.replace(/[^0-9]/g, "");
       if (numericOnly === cleanIdentifier && numericOnly.length > 0) {
         const productId = parseInt(numericOnly);
@@ -35,21 +34,18 @@ export const saqrAssistant = {
         }
       }
 
-      // البحث بالاسم إذا لم يتم العثور عليه بالـ ID
       if (!product) {
-        const r = await db
-          .select()
-          .from(products)
+        const r = await db.select().from(products)
           .where(ilike(products.name, `%${cleanIdentifier}%`))
           .limit(1);
         product = r[0];
       }
 
       if (!product) {
-        return `ما لكيت منتج باسم أو كود "${cleanIdentifier}" 🔍\n\nتأكد من:\n- كتابة اسم المنتج بالعربي كما يظهر في التطبيق\n- أو رقم المنتج الرقمي فقط (مثل: 42)\n\nمثال: "سماعة أنكر" أو "15"`;
+        return `ما لكيت منتج باسم أو كود "${cleanIdentifier}" 🔍\n\nتأكد من:\n- كتابة اسم المنتج بالعربي كما يظهر في التطبيق\n- أو رقم المنتج الرقمي فقط (مثل: 42)`;
       }
 
-      // إحصائيات مبيعات التاجر
+      // ── إحصائيات التاجر ──
       const salesStats = await db
         .select({
           totalSold:   sql<number>`coalesce(sum(${orderItems.quantity}), 0)`,
@@ -57,54 +53,92 @@ export const saqrAssistant = {
         })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
-        .where(
-          and(
-            eq(orderItems.productId, product.id),
-            eq(orders.merchantId, merchantId)
-          )
-        );
+        .where(and(
+          eq(orderItems.productId, product.id),
+          eq(orders.merchantId, merchantId)
+        ));
 
       const totalSold   = Number(salesStats[0]?.totalSold)  || 0;
       const totalOrders = Number(salesStats[0]?.totalOrders) || 0;
 
-      const profit       = (product.suggestedPrice || 0) - (product.wholesalePrice || 0);
-      const profitMargin = product.wholesalePrice > 0
-        ? ((profit / product.wholesalePrice) * 100).toFixed(1)
+      const discount           = product.discount || 0;
+      const effectiveWholesale = discount > 0
+        ? (product.wholesalePrice || 0) * (1 - discount / 100)
+        : (product.wholesalePrice || 0);
+      const suggestedPrice  = product.suggestedPrice  || 0;
+      const sellingPriceMin = product.sellingPriceMin || effectiveWholesale;
+      const profit          = suggestedPrice - effectiveWholesale;
+      const profitMargin    = effectiveWholesale > 0
+        ? ((profit / effectiveWholesale) * 100).toFixed(0)
         : "0";
+      const stockStatus = product.stock === 0 ? "نافذ ❌"
+        : product.stock < 10 ? `شحيح ⚠️ (${product.stock} قطعة فقط)`
+        : product.stock < 50 ? `معقول (${product.stock} قطعة)`
+        : `وفير (${product.stock} قطعة)`;
 
-      // البرومبت الجديد: مباشر، عملي، بدون نجوم، ومقسم بوضوح
-      const prompt = `أنت "صقر" 🦅، مساعد منصة "تسليم" للدروب شوبينج في العراق.
-مهمتك إعطاء التاجر "الزبدة" بلهجة عراقية عملية ومباشرة.
-ممنوع منعاً باتاً استخدام علامة النجمة (*) في الرد. استخدم الشرطة (-) للقوائم.
+      // ── وصف المنتج ──
+      const descriptionSection = product.description && product.description.trim().length > 0
+        ? `\nوصف المنتج الكامل:\n"${product.description.substring(0, 500)}"`
+        : "\n(لا يوجد وصف للمنتج)";
 
-بيانات المنتج:
+      // ── السعر المناسب ──
+      const priceRange = `أدنى سعر مسموح: ${sellingPriceMin.toLocaleString()} د.ع | السعر المقترح: ${suggestedPrice.toLocaleString()} د.ع`;
+
+      const systemPrompt = `أنت "صقر" 🦅، خبير دروب شوبينج عراقي في منصة "تسليم".
+شخصيتك: مباشر، عملي، بلهجة بغدادية خفيفة. تعطي نصائح مبنية على أرقام حقيقية.
+ممنوع: علامة النجمة (*). استخدم الشرطة (-) للقوائم.
+ممنوع: مديح فارغ أو تطويل بلا فايدة.`;
+
+      const userPrompt = `حلل هذا المنتج للتاجر:
+
+━━━ بيانات المنتج ━━━
 الاسم: ${product.name}
-سعر الجملة: ${(product.wholesalePrice || 0).toLocaleString()} د.ع
-السعر المقترح: ${(product.suggestedPrice || 0).toLocaleString()} د.ع
-الربح المتوقع: ${profit.toLocaleString()} د.ع (${profitMargin}%)
-المخزون: ${product.stock} قطعة
-مبيعات التاجر من هذا المنتج: ${totalSold} قطعة
+التصنيف: ${product.category || "عام"}
+سعر الجملة: ${effectiveWholesale.toLocaleString()} د.ع${discount > 0 ? ` (بعد خصم ${discount}%)` : ""}
+${priceRange}
+الربح بالسعر المقترح: ${profit.toLocaleString()} د.ع (${profitMargin}%)
+المخزون: ${stockStatus}
+${descriptionSection}
 
-اكتب الرد مقسماً إلى 4 أقسام واضحة ومفصولة بأسطر فارغة كالتالي:
+━━━ أداء التاجر ━━━
+${totalOrders === 0
+  ? "منتج جديد - ما بعت منه بعد"
+  : `باع ${totalSold} قطعة بـ ${totalOrders} طلب`}
 
-الربح والمبيعات 💰
-(اكتب سطرين مباشرين عن قيمة الربح وهل هو مجدي، مع ذكر مبيعات التاجر السابقة إذا وجدت)
+━━━ المطلوب ━━━
 
-حالة المخزون 📦
-(سطر واحد يوضح هل المخزون كافي أم يحتاج استعجال بالبيع)
+الربح والجدوى 💰
+- هل يستاهل الوقت والجهد؟
+- احسب الربح لو بعت 10 قطع وبعد 30 قطعة
+- اقترح السعر الأمثل للبيع (بين ${sellingPriceMin.toLocaleString()} و${(suggestedPrice * 1.2).toLocaleString()} د.ع) وبررله ليش
 
-نصيحة الاستهداف 🎯
-(سطرين عن أفضل المحافظات العراقية لاستهدافها لهذا المنتج ولماذا)
+المخزون والتوقيت 📦
+- سطر وحده: هل يستعجل البيع أو الوضع مريح؟
+
+تحليل المنتج 🔍
+- بناءً على الوصف والمواصفات: شنو نقاط قوته الحقيقية؟
+- شنو الفئة المستهدفة الأنسب له؟ (عمر، اهتمام، جنس)
+
+نصيحة الاستهداف 🗺️
+- 3 محافظات فقط مع سبب واحد لكل محافظة
 
 البوست الإعلاني 📱
-(اكتب بوست جاهز للنسخ، جذاب، باللهجة العراقية، مع إيموجيات مناسبة، بدون ذكر سعر الجملة نهائياً، اذكر السعر المقترح فقط إذا لزم الأمر)`;
+- جاهز للنسخ والنشر فوراً
+- باللهجة العراقية الجذابة
+- لا تذكر سعر الجملة نهائياً
+- اذكر السعر المقترح بشكل جذاب
+- أضف هاشتاقات عراقية مناسبة في النهاية`;
 
-      const model  = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-      const result = await model.generateContent(prompt);
-      let text   = result.response.text();
+      const model  = genAI.getGenerativeModel({
+        model: GEMINI_MODEL,
+        systemInstruction: systemPrompt,
+      });
 
-      // تنظيف إضافي للتأكد من إزالة أي نجوم قد يولدها الموديل بالخطأ
-      text = text.replace(/\*/g, '');
+      const result = await model.generateContent(userPrompt);
+      let text = result.response.text();
+
+      // تنظيف النجوم
+      text = text.replace(/\*/g, "");
 
       if (!text || text.trim().length === 0) {
         return "صقر ما رد بشي، حاول مرة ثانية عيوني.";
@@ -113,7 +147,19 @@ export const saqrAssistant = {
       return text;
 
     } catch (error: any) {
-      console.error("Saqr error:", error?.message || String(error));
+      const msg = error?.message || String(error);
+      console.error("Saqr error:", msg);
+
+      if (msg.includes("404") || msg.includes("not found") || msg.includes("MODEL")) {
+        return "خلل في موديل الذكاء الاصطناعي، تواصل مع المطور.";
+      }
+      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
+        return "مفتاح Gemini منتهي أو غلط، تواصل مع المطور.";
+      }
+      if (msg.includes("quota") || msg.includes("429") || msg.includes("rate")) {
+        return "صقر مشغول هسه، انتظر دقيقة وحاول مرة ثانية.";
+      }
+
       return "صار عندي خلل فني بسيط، حاول مرة ثانية عيوني.";
     }
   },
