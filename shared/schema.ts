@@ -133,8 +133,6 @@ export const favorites = pgTable('favorites', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
-export type Favorite = typeof favorites.$inferSelect;
-
 export const supportMessages = pgTable('support_messages', {
   id:        serial('id').primaryKey(),
   userId:    integer('user_id').notNull(),
@@ -144,4 +142,11 @@ export const supportMessages = pgTable('support_messages', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
-export type SupportMessage = typeof supportMessages.$inferSelect;
+export const categories = pgTable('categories', {
+  id:        serial('id').primaryKey(),
+  name:      text('name').notNull().unique(),
+  icon:      text('icon').notNull().default('grid-outline'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  isActive:  boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow(),
+});
