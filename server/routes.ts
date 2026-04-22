@@ -56,7 +56,7 @@ import { storage } from "./storage";
 
 import { db } from "./db";
 
-import { promoCodes, products, orders, orderItems, banners, withdrawals, favorites, notifications, pushTokens, supportMessages } from "@shared/schema";
+import { promoCodes, products, orders, orderItems, banners, withdrawals, favorites, notifications, pushTokens, supportMessages, categories } from "@shared/schema";
 
 import { eq, sql } from "drizzle-orm";
 
@@ -1767,6 +1767,107 @@ res.status(500).json({ message: "حدث خطأ في الخادم" });
 }
 
 });
+
+
+// ── Migration: جدول الفئات ──
+try {
+  await db.execute(`CREATE TABLE IF NOT EXISTS categories (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    icon TEXT NOT NULL DEFAULT 'grid-outline',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`);
+  // إضافة فئات افتراضية إذا الجدول فارغ
+  const existing = await db.execute(`SELECT COUNT(*) as count FROM categories`);
+  const count = Number((existing.rows[0] as any)?.count || 0);
+  if (count === 0) {
+    await db.execute(`INSERT INTO categories (name, icon, sort_order) VALUES
+      ('إلكترونيات', 'phone-portrait-outline', 1),
+      ('أجهزة منزلية', 'home-outline', 2),
+      ('اكسسوارات نسائية', 'rose-outline', 3),
+      ('منوعات', 'grid-outline', 4)
+    `);
+  }
+  console.log('✅ Categories migration done');
+} catch (e) { console.log('Categories migration note:', e); }
+
+// ══════════════════════════════════════════
+// ── Categories Routes ──
+// ══════════════════════════════════════════
+
+// جلب كل الفئات النشطة (للتجار والأدمن)
+app.get('/api/categories', async (_req, res) => {
+  try {
+    const result = await db.select().from(categories)
+      .orderBy(categories.sortOrder);
+    res.json(result);
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+// جلب "الأكثر مبيعاً" — أعلى 10 منتجات بالمبيعات
+app.get('/api/categories/best-sellers', async (_req, res) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT p.id, p.name, p.category, SUM(oi.quantity) as total_sold
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+      JOIN orders o ON o.id = oi.order_id
+      WHERE o.status IN ('delivered')
+        AND p.is_active = TRUE
+        AND p.stock > 0
+      GROUP BY p.id, p.name, p.category
+      ORDER BY total_sold DESC
+      LIMIT 10
+    `);
+    res.json(result.rows);
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+// إضافة فئة (أدمن فقط)
+app.post('/api/categories', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    const { name, icon, sortOrder } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ message: 'اسم الفئة مطلوب' });
+    const result = await db.insert(categories).values({
+      name: name.trim(),
+      icon: icon || 'grid-outline',
+      sortOrder: Number(sortOrder) || 0,
+    }).returning();
+    res.status(201).json(result[0]);
+  } catch (e: any) {
+    if (e.message?.includes('unique')) return res.status(400).json({ message: 'هذه الفئة موجودة مسبقاً' });
+    res.status(500).json({ message: 'حدث خطأ في الخادم' });
+  }
+});
+
+// تعديل فئة (أدمن فقط)
+app.patch('/api/categories/:id', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    const { name, icon, sortOrder, isActive } = req.body;
+    const update: any = {};
+    if (name      !== undefined) update.name      = name.trim();
+    if (icon      !== undefined) update.icon      = icon;
+    if (sortOrder !== undefined) update.sortOrder = Number(sortOrder);
+    if (isActive  !== undefined) update.isActive  = Boolean(isActive);
+    const result = await db.update(categories).set(update)
+      .where(eq(categories.id, Number(req.params.id))).returning();
+    res.json(result[0]);
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+// حذف فئة (أدمن فقط)
+app.delete('/api/categories/:id', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    await db.delete(categories).where(eq(categories.id, Number(req.params.id)));
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
 
 
 return httpServer;
