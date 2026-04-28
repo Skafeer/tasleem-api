@@ -16,6 +16,9 @@ app.use(helmet({
 const ALLOWED_ORIGINS = [
   'http://localhost:8081',
   'http://localhost:19006',
+  'https://tasleem-dashboard.vercel.app', // Vercel بعدين
+    'http://localhost:5173',                 // ✅ أضف هذا
+      'http://localhost:3000',
   'exp://',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
