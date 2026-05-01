@@ -1848,6 +1848,28 @@ app.patch('/api/categories/:id', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
     const { name, icon, sortOrder, isActive } = req.body;
+
+    // ✅ لو تغير الاسم — حدّث المنتجات أيضاً
+    if (name !== undefined) {
+      const oldCat = await db.select({ name: categories.name })
+        .from(categories).where(eq(categories.id, Number(req.params.id))).limit(1);
+      const oldName = oldCat[0]?.name;
+
+      if (oldName && oldName !== name.trim()) {
+        const prods = await db.select({ id: products.id, category: products.category })
+          .from(products)
+          .where(sql`category LIKE ${'%' + oldName + '%'}`);
+
+        for (const p of prods) {
+          const updated = (p.category || '')
+            .split(',')
+            .map((c: string) => c.trim() === oldName ? name.trim() : c.trim())
+            .join(',');
+          await db.update(products).set({ category: updated }).where(eq(products.id, p.id));
+        }
+      }
+    }
+
     const update: any = {};
     if (name      !== undefined) update.name      = name.trim();
     if (icon      !== undefined) update.icon      = icon;
@@ -1863,8 +1885,30 @@ app.patch('/api/categories/:id', requireAuth, async (req: any, res) => {
 app.delete('/api/categories/:id', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
+    // ✅ جلب اسم الفئة قبل الحذف
+    const catResult = await db.select().from(categories)
+      .where(eq(categories.id, Number(req.params.id))).limit(1);
+    const catName = catResult[0]?.name;
+
+    if (catName) {
+      // ✅ إزالة اسم الفئة من كل المنتجات — المنتج لا يُحذف
+      const prods = await db.select({ id: products.id, category: products.category })
+        .from(products)
+        .where(sql`category LIKE ${'%' + catName + '%'}`);
+
+      for (const p of prods) {
+        const updated = (p.category || '')
+          .split(',')
+          .map((c: string) => c.trim())
+          .filter((c: string) => c !== catName)
+          .join(',') || 'عام';
+        await db.update(products).set({ category: updated }).where(eq(products.id, p.id));
+      }
+    }
+
+    // ✅ حذف الفئة
     await db.delete(categories).where(eq(categories.id, Number(req.params.id)));
-    res.json({ success: true });
+    res.json({ success: true, affectedProducts: catName ? 0 : 0 });
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
