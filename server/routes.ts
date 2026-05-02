@@ -534,6 +534,20 @@ pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
 
 }
 
+// ✅ إشعار للأدمن عند إنشاء طلب جديد
+try {
+  const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+  const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+  if (adminIds.length > 0) {
+    const { sendPushNotification } = await import('./notifications');
+    await sendPushNotification({
+      userIds: adminIds,
+      title: '🛍 طلب جديد',
+      body: `طلب جديد #${order?.id} من ${req.user.storeName} — ${finalAmount.toLocaleString()} د.ع`,
+      data: { type: 'new_order', orderId: String(order?.id ?? '') },
+    });
+  }
+} catch (_) {}
 
 res.status(201).json(order);
 
