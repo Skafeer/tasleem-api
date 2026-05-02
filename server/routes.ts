@@ -92,7 +92,7 @@ entry.count++;
 
 if (entry.count > maxRequests) {
 
-return res.status(429).json({ message: 'طلبات كثيرة جداً، حاول بعد قليل' });
+return res.status(429).json({ message: 'طلبات كثيرة جدًا، حاول بعد قليل' });
 
 }
 
