@@ -594,10 +594,15 @@ if (req.body.status === "delivered" && order.status !== "delivered") {
   );
 }
 
-// ✅ استعادة المخزون عند الإلغاء أو الإرجاع
-const shouldRestoreStock =
-  (req.body.status === "returned"  && order.status !== "returned") ||
-  (req.body.status === "cancelled" && order.status !== "cancelled");
+// ✅ استعادة المخزون — فقط إذا كانت الحالة السابقة تستوجب خصم المخزون
+// الحالات التي لا تستوجب استعادة: cancelled, returned (المخزون رجع مسبقاً)
+const STOCK_ALREADY_RESTORED = ['cancelled', 'returned'];
+const isMovingToTerminal =
+  (req.body.status === 'returned' || req.body.status === 'cancelled');
+const wasAlreadyRestored = STOCK_ALREADY_RESTORED.includes(order.status);
+
+// نستعيد فقط إذا: الحالة الجديدة terminal + الحالة القديمة لم تكن terminal
+const shouldRestoreStock = isMovingToTerminal && !wasAlreadyRestored;
 
 if (shouldRestoreStock) {
   const fullOrder = await storage.getOrder(order.id);
