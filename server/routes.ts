@@ -56,7 +56,7 @@ import { storage } from "./storage";
 
 import { db } from "./db";
 
-import { promoCodes, products, orders, orderItems, banners, withdrawals, favorites, notifications, pushTokens, supportMessages, categories } from "@shared/schema";
+import { promoCodes, products, orders, orderItems, banners, withdrawals, favorites, notifications, pushTokens, supportMessages, categories, inventoryLog } from "@shared/schema";
 
 import { eq, sql } from "drizzle-orm";
 
@@ -504,19 +504,35 @@ promoCode: validPromo, promoDiscount,
 // ✅ تخفيض المخزون
 
 await Promise.all(enrichedItems.map(async (item: any) => {
+  const product = await storage.getProduct(item.productId);
+  if (product) {
+    const newStock = Math.max(0, product.stock - item.quantity);
+    await storage.updateProduct(item.productId, { stock: newStock });
 
-const product = await storage.getProduct(item.productId);
+    // سجّل في inventory_log
+    await db.insert(inventoryLog).values({
+      productId: item.productId, adminId: null,
+      change: -item.quantity, reason: 'order',
+      note: `طلب #${order?.id}`, stockAfter: newStock,
+    }).catch(() => {});
 
-if (product) {
-
-await storage.updateProduct(item.productId, {
-
-stock: Math.max(0, product.stock - item.quantity),
-
-});
-
-}
-
+    // إشعار للأدمن لو نفد المخزون
+    if (newStock === 0) {
+      try {
+        const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+        const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+        if (adminIds.length > 0) {
+          const { sendPushNotification } = await import('./notifications');
+          await sendPushNotification({
+            userIds: adminIds,
+            title: '⚠️ نفد المخزون',
+            body: `المنتج "${product.name}" نفد المخزون بالكامل`,
+            data: { type: 'stock_out', productId: String(item.productId) },
+          });
+        }
+      } catch (_) {}
+    }
+  }
 }));
 
 
@@ -1923,6 +1939,139 @@ app.delete('/api/categories/:id', requireAuth, async (req: any, res) => {
     // ✅ حذف الفئة
     await db.delete(categories).where(eq(categories.id, Number(req.params.id)));
     res.json({ success: true, affectedProducts: catName ? 0 : 0 });
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+
+
+// ══════════════════════════════════════════
+// ── Inventory Routes ──
+// ══════════════════════════════════════════
+
+// Migration جدول السجل
+try {
+  await db.execute(`CREATE TABLE IF NOT EXISTS inventory_log (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL,
+    admin_id INTEGER,
+    change INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT 'manual',
+    note TEXT,
+    stock_after INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`);
+} catch (e) { console.log('inventory_log migration:', e); }
+
+// ── جلب المخزون الكامل ──
+app.get('/api/inventory', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    const filter = req.query.filter as string; // low | out | stale | all
+    let prods = await storage.getProducts();
+
+    if (filter === 'low')  prods = prods.filter((p: any) => p.stock > 0 && p.stock <= 10);
+    if (filter === 'out')  prods = prods.filter((p: any) => p.stock === 0);
+    if (filter === 'stale') {
+      // منتجات ما بيعت 30 يوم
+      const staleResult = await db.execute(sql`
+        SELECT DISTINCT product_id FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.created_at > NOW() - INTERVAL '30 days'
+      `);
+      const activeIds = new Set((staleResult.rows as any[]).map((r: any) => r.product_id));
+      prods = prods.filter((p: any) => !activeIds.has(p.id) && p.stock > 0);
+    }
+
+    // أضف إحصائيات لكل منتج
+    const enriched = await Promise.all(prods.map(async (p: any) => {
+      const sales = await db.execute(sql`
+        SELECT COALESCE(SUM(oi.quantity), 0) as total_sold
+        FROM order_items oi JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = ${p.id} AND o.status = 'delivered'
+      `);
+      return { ...p, totalSold: Number((sales.rows[0] as any)?.total_sold || 0) };
+    }));
+
+    res.json(enriched);
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+// ── تعديل مخزون منتج يدوياً ──
+app.patch('/api/inventory/:productId', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    const { change, note, reason = 'manual' } = req.body;
+    const productId = Number(req.params.productId);
+
+    if (!change || isNaN(Number(change))) return res.status(400).json({ message: 'قيمة التغيير مطلوبة' });
+
+    const product = await storage.getProduct(productId);
+    if (!product) return res.status(404).json({ message: 'المنتج غير موجود' });
+
+    const newStock = Math.max(0, product.stock + Number(change));
+    await storage.updateProduct(productId, { stock: newStock });
+
+    // سجّل في inventory_log
+    await db.insert(inventoryLog).values({
+      productId, adminId: req.user.id,
+      change: Number(change), reason, note: note || null,
+      stockAfter: newStock,
+    });
+
+    // إشعار للأدمن لو نفد المخزون
+    if (newStock === 0) {
+      try {
+        const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+        const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+        const { sendPushNotification } = await import('./notifications');
+        await sendPushNotification({
+          userIds: adminIds,
+          title: '⚠️ نفد المخزون',
+          body: `المنتج "${product.name}" نفد المخزون بالكامل`,
+          data: { type: 'stock_out', productId: String(productId) },
+        });
+      } catch (_) {}
+    }
+
+    res.json({ stock: newStock, change: Number(change) });
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+// ── سجل تغييرات مخزون منتج ──
+app.get('/api/inventory/:productId/log', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    const result = await db.execute(sql`
+      SELECT il.*, p.name as product_name, u.store_name as admin_name
+      FROM inventory_log il
+      LEFT JOIN products p ON p.id = il.product_id
+      LEFT JOIN users u ON u.id = il.admin_id
+      WHERE il.product_id = ${Number(req.params.productId)}
+      ORDER BY il.created_at DESC LIMIT 50
+    `);
+    res.json(result.rows);
+  } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+});
+
+// ── إحصائيات المخزون العامة ──
+app.get('/api/inventory/stats', requireAuth, async (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+  try {
+    const prods = await storage.getProducts();
+    const total     = prods.length;
+    const outOfStock = prods.filter((p: any) => p.stock === 0).length;
+    const lowStock   = prods.filter((p: any) => p.stock > 0 && p.stock <= 10).length;
+    const totalValue = prods.reduce((s: number, p: any) => s + (p.wholesalePrice * p.stock), 0);
+
+    const staleResult = await db.execute(sql`
+      SELECT DISTINCT product_id FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id
+      WHERE o.created_at > NOW() - INTERVAL '30 days'
+    `);
+    const activeIds = new Set((staleResult.rows as any[]).map((r: any) => r.product_id));
+    const stale = prods.filter((p: any) => !activeIds.has(p.id) && p.stock > 0).length;
+
+    res.json({ total, outOfStock, lowStock, stale, totalValue });
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
