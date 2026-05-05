@@ -150,3 +150,14 @@ export const categories = pgTable('categories', {
   isActive:  boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow(),
 });
+
+export const inventoryLog = pgTable('inventory_log', {
+  id:         serial('id').primaryKey(),
+  productId:  integer('product_id').notNull(),
+  adminId:    integer('admin_id'),
+  change:     integer('change').notNull(),
+  reason:     text('reason').notNull().default('manual'),
+  note:       text('note'),
+  stockAfter: integer('stock_after').notNull(),
+  createdAt:  timestamp('created_at').defaultNow(),
+});
