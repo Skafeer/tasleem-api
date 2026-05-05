@@ -594,32 +594,32 @@ if (req.body.status === "delivered" && order.status !== "delivered") {
   );
 }
 
-// ✅ اذا مرتجع — رجع المخزون
+// ✅ استعادة المخزون عند الإلغاء أو الإرجاع
+const shouldRestoreStock =
+  (req.body.status === "returned"  && order.status !== "returned") ||
+  (req.body.status === "cancelled" && order.status !== "cancelled");
 
-if (req.body.status === "returned" && order.status !== "returned") {
+if (shouldRestoreStock) {
+  const fullOrder = await storage.getOrder(order.id);
+  if (fullOrder?.items) {
+    await Promise.all(fullOrder.items.map(async (item: any) => {
+      const product = await storage.getProduct(item.productId);
+      if (product) {
+        const newStock = product.stock + item.quantity;
+        await storage.updateProduct(item.productId, { stock: newStock });
 
-const fullOrder = await storage.getOrder(order.id);
-
-if (fullOrder?.items) {
-
-await Promise.all(fullOrder.items.map(async (item: any) => {
-
-const product = await storage.getProduct(item.productId);
-
-if (product) {
-
-await storage.updateProduct(item.productId, {
-
-stock: product.stock + item.quantity,
-
-});
-
-}
-
-}));
-
-}
-
+        // ✅ سجّل في inventory_log
+        await db.insert(inventoryLog).values({
+          productId: item.productId,
+          adminId: req.user.id,
+          change: item.quantity,
+          reason: req.body.status === "cancelled" ? "cancel" : "returned",
+          note: `طلب #${order.id} — ${req.body.status === "cancelled" ? "ملغي" : "مرتجع"}`,
+          stockAfter: newStock,
+        }).catch(() => {});
+      }
+    }));
+  }
 }
 
 const STATUS_LABELS: Record<string, string> = {
