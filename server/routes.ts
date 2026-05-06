@@ -594,34 +594,56 @@ if (req.body.status === "delivered" && order.status !== "delivered") {
   );
 }
 
-// ✅ استعادة المخزون — فقط إذا كانت الحالة السابقة تستوجب خصم المخزون
-// الحالات التي لا تستوجب استعادة: cancelled, returned (المخزون رجع مسبقاً)
-const STOCK_ALREADY_RESTORED = ['cancelled', 'returned'];
-const isMovingToTerminal =
-  (req.body.status === 'returned' || req.body.status === 'cancelled');
-const wasAlreadyRestored = STOCK_ALREADY_RESTORED.includes(order.status);
+// ✅ منطق المخزون الثنائي الاتجاه
+// الحالات "النهائية" = المخزون رجع للمستودع
+const TERMINAL_STATUSES = ['cancelled', 'returned'];
+const wasTerminal = TERMINAL_STATUSES.includes(order.status);
+const isTerminal  = TERMINAL_STATUSES.includes(req.body.status);
 
-// نستعيد فقط إذا: الحالة الجديدة terminal + الحالة القديمة لم تكن terminal
-const shouldRestoreStock = isMovingToTerminal && !wasAlreadyRestored;
+// حالة 1: انتقال إلى terminal (cancelled/returned) من حالة نشطة → استعد المخزون
+const shouldRestoreStock = isTerminal && !wasTerminal;
 
-if (shouldRestoreStock) {
+// حالة 2: انتقال من terminal إلى حالة نشطة → اخصم المخزون مجدداً
+const shouldDeductStock  = !isTerminal && wasTerminal;
+
+if (shouldRestoreStock || shouldDeductStock) {
   const fullOrder = await storage.getOrder(order.id);
   if (fullOrder?.items) {
     await Promise.all(fullOrder.items.map(async (item: any) => {
       const product = await storage.getProduct(item.productId);
-      if (product) {
-        const newStock = product.stock + item.quantity;
-        await storage.updateProduct(item.productId, { stock: newStock });
+      if (!product) return;
 
-        // ✅ سجّل في inventory_log
-        await db.insert(inventoryLog).values({
-          productId: item.productId,
-          adminId: req.user.id,
-          change: item.quantity,
-          reason: req.body.status === "cancelled" ? "cancel" : "returned",
-          note: `طلب #${order.id} — ${req.body.status === "cancelled" ? "ملغي" : "مرتجع"}`,
-          stockAfter: newStock,
-        }).catch(() => {});
+      const change   = shouldRestoreStock ? item.quantity : -item.quantity;
+      const newStock = Math.max(0, product.stock + change);
+      await storage.updateProduct(item.productId, { stock: newStock });
+
+      // سجّل في inventory_log
+      await db.insert(inventoryLog).values({
+        productId: item.productId,
+        adminId:   req.user.id,
+        change,
+        reason: shouldRestoreStock
+          ? (req.body.status === 'cancelled' ? 'cancel' : 'returned')
+          : 'order',
+        note: shouldRestoreStock
+          ? `طلب #${order.id} — ${req.body.status === 'cancelled' ? 'ملغي' : 'مرتجع'}`
+          : `طلب #${order.id} — إعادة تفعيل من ${order.status}`,
+        stockAfter: newStock,
+      }).catch(() => {});
+
+      // إشعار للأدمن لو نفد المخزون بعد الخصم
+      if (shouldDeductStock && newStock === 0) {
+        try {
+          const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+          const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+          const { sendPushNotification } = await import('./notifications');
+          await sendPushNotification({
+            userIds: adminIds,
+            title: '⚠️ نفد المخزون',
+            body: `المنتج "${product.name}" نفد المخزون بالكامل`,
+            data: { type: 'stock_out', productId: String(item.productId) },
+          });
+        } catch (_) {}
       }
     }));
   }
