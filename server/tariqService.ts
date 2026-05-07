@@ -315,9 +315,13 @@ export const tariqAssistant = {
             systemInstruction: systemPrompt,
           });
 
-          const chat = model.startChat({
-            history: recentMessages.slice(0, -1), // كل الرسائل ما عدا الأخيرة
-          });
+          // كل الرسائل ما عدا الأخيرة — مع ضمان أول رسالة دايماً user
+          let history = recentMessages.slice(0, -1);
+          while (history.length > 0 && history[0].role !== 'user') {
+            history = history.slice(1);
+          }
+
+          const chat = model.startChat({ history });
 
           const lastMessage = recentMessages[recentMessages.length - 1];
           const result = await chat.sendMessage(lastMessage.parts[0].text);
