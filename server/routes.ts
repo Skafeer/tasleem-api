@@ -1,8 +1,10 @@
 import { saqrAssistant } from "./saqrService";
+import { tariqAssistant } from "./tariqService";
 import { Express, Request, Response } from "express";
 import { Server } from "http";
 import { setupAuth, requireAuth } from "./auth";
-const saqrLimiter = rateLimit(10, 60_000); // 10 طلبات/دقيقة فقط
+const saqrLimiter  = rateLimit(10, 60_000); // 10 طلبات/دقيقة لصقر
+const tariqLimiter = rateLimit(20, 60_000); // 20 رسالة/دقيقة لطارق
 
 
 // ✅ إخفاء البيانات الحساسة قبل إرسالها للعميل
@@ -137,7 +139,7 @@ setupAuth(app);
 
 setupUpload(app);
 
-		// ── Saqr AI Assistant ──
+		// ── Saqr AI Assistant (القديم - محافظ عليه) ──
 		app.post("/api/saqr/analyze", requireAuth, saqrLimiter, async (req: any, res) => {
 			try {
 				const { identifier } = req.body;
@@ -145,6 +147,39 @@ setupUpload(app);
 				const analysis = await saqrAssistant.analyzeProduct(identifier, req.user.id);
 				res.json({ analysis });
 			} catch (e) { res.status(500).json({ message: "حدث خطأ في استدعاء صقر" }); }
+		});
+
+		// ── Tariq AI Assistant (الجديد - محادثة ذكية) ──
+		app.post("/api/tariq/chat", requireAuth, tariqLimiter, async (req: any, res) => {
+			try {
+				const { messages } = req.body;
+
+				if (!messages || !Array.isArray(messages) || messages.length === 0)
+					return res.status(400).json({ message: "يرجى إرسال المحادثة" });
+
+				if (messages.length > 40)
+					return res.status(400).json({ message: "المحادثة طويلة جداً، ابدأ محادثة جديدة" });
+
+				const validRoles = ["user", "model"];
+				const isValid = messages.every((m: any) =>
+					validRoles.includes(m.role) &&
+					Array.isArray(m.parts) &&
+					m.parts.length > 0 &&
+					typeof m.parts[0]?.text === "string" &&
+					m.parts[0].text.trim().length > 0 &&
+					m.parts[0].text.length <= 1000
+				);
+
+				if (!isValid)
+					return res.status(400).json({ message: "صيغة الرسائل غير صحيحة" });
+
+				const reply = await tariqAssistant.chat(messages, req.user.id);
+				res.json({ reply });
+
+			} catch (e) {
+				console.error("Tariq route error:", e);
+				res.status(500).json({ message: "حدث خطأ في استدعاء طارق" });
+			}
 		});
 
 
