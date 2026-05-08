@@ -5,11 +5,17 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-if (!process.env.GEMINI_API_KEY) {
-  console.warn("⚠️  GEMINI_API_KEY is not set - Tariq AI will not work");
+// ── API Keys Rotation ──
+const GEMINI_KEYS = [
+  process.env.GEMINI_KEY_1,
+  process.env.GEMINI_KEY_2,
+  process.env.GEMINI_KEY_3,
+].filter(Boolean) as string[];
+
+if (GEMINI_KEYS.length === 0) {
+  console.warn("⚠️  لا يوجد أي GEMINI_KEY — طارق لن يعمل");
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const GEMINI_MODEL = "models/gemini-2.5-flash-lite";
 
 export type ChatMessage = {
@@ -202,7 +208,7 @@ ${merchantContext}
 
 export const tariqAssistant = {
   chat: async (messages: ChatMessage[], merchantId: number): Promise<string> => {
-    if (!process.env.GEMINI_API_KEY) return "طارق غير متاح حالياً، تواصل مع الدعم.";
+    if (GEMINI_KEYS.length === 0) return "طارق غير متاح حالياً، تواصل مع الدعم.";
     if (!messages || messages.length === 0) return "أرسل لي رسالة عيوني 😄";
 
     try {
@@ -210,10 +216,13 @@ export const tariqAssistant = {
       const systemPrompt    = buildSystemPrompt(merchantContext);
       const recentMessages  = messages.slice(-20);
 
-      const MAX_RETRIES = 3;
       let lastError: any;
 
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      // ── دوران على المفاتيح ──
+      for (let keyIndex = 0; keyIndex < GEMINI_KEYS.length; keyIndex++) {
+        const currentKey = GEMINI_KEYS[keyIndex];
+        const genAI      = new GoogleGenerativeAI(currentKey);
+
         try {
           const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: systemPrompt });
 
@@ -226,18 +235,27 @@ export const tariqAssistant = {
           let text          = result.response.text().replace(/\*/g, "");
 
           if (!text || text.trim().length === 0) throw new Error("EMPTY_RESPONSE");
+
+          // نجح — أرجع الرد مباشرة
+          console.log(`✅ طارق نجح بالمفتاح ${keyIndex + 1}`);
           return text;
 
         } catch (error: any) {
           lastError = error;
           const msg = error?.message || String(error);
-          if ((msg.includes("quota") || msg.includes("429") || msg.includes("rate")) && attempt < MAX_RETRIES) {
-            await sleep(2000 * attempt);
+          const isQuota = msg.includes("quota") || msg.includes("429") || msg.includes("rate") || msg.includes("RESOURCE_EXHAUSTED");
+
+          if (isQuota) {
+            // الحصة نفدت — جرب المفتاح الجاي
+            console.log(`⚠️ المفتاح ${keyIndex + 1} نفد، ننتقل للمفتاح ${keyIndex + 2}...`);
             continue;
           }
+
+          // خطأ مختلف — وقف مباشرة
           break;
         }
       }
+
       throw lastError;
 
     } catch (error: any) {
