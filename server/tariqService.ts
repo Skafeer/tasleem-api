@@ -10,252 +10,140 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const GEMINI_MODEL = "models/gemini-2.5-flash-lite";
+const GEMINI_MODEL = "gemini-2.0-flash";
 
-// ── أنواع المحادثة ──
 export type ChatMessage = {
   role: "user" | "model";
   parts: [{ text: string }];
 };
 
-// ── جمع بيانات التاجر الكاملة من DB ──
 async function getMerchantContext(merchantId: number): Promise<string> {
   try {
-    // ── بيانات التاجر الأساسية ──
     const merchantData = await db
-      .select({
-        storeName: users.storeName,
-        balance: users.balance,
-        pendingBalance: users.pendingBalance,
-        createdAt: users.createdAt,
-      })
-      .from(users)
-      .where(eq(users.id, merchantId))
-      .limit(1);
+      .select({ storeName: users.storeName, balance: users.balance, pendingBalance: users.pendingBalance, createdAt: users.createdAt })
+      .from(users).where(eq(users.id, merchantId)).limit(1);
 
     const merchant = merchantData[0];
     if (!merchant) return "لا توجد بيانات للتاجر.";
 
-    // ── إحصائيات الطلبات ──
-    const now = new Date();
-    const startOfThisWeek = new Date(now);
-    startOfThisWeek.setDate(now.getDate() - now.getDay());
-    startOfThisWeek.setHours(0, 0, 0, 0);
-
-    const startOfLastWeek = new Date(startOfThisWeek);
-    startOfLastWeek.setDate(startOfLastWeek.getDate() - 7);
-
+    const now              = new Date();
+    const startOfThisWeek  = new Date(now); startOfThisWeek.setDate(now.getDate() - now.getDay()); startOfThisWeek.setHours(0,0,0,0);
+    const startOfLastWeek  = new Date(startOfThisWeek); startOfLastWeek.setDate(startOfLastWeek.getDate() - 7);
     const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const endOfLastMonth   = new Date(now.getFullYear(), now.getMonth(), 0);
 
-    // كل الطلبات
     const allOrders = await db
-      .select({
-        id:          orders.id,
-        status:      orders.status,
-        totalProfit: orders.totalProfit,
-        totalAmount: orders.totalAmount,
-        createdAt:   orders.createdAt,
-      })
-      .from(orders)
-      .where(eq(orders.merchantId, merchantId))
-      .orderBy(desc(orders.createdAt));
+      .select({ id: orders.id, status: orders.status, totalProfit: orders.totalProfit, totalAmount: orders.totalAmount, createdAt: orders.createdAt })
+      .from(orders).where(eq(orders.merchantId, merchantId)).orderBy(desc(orders.createdAt));
 
     const totalOrders     = allOrders.length;
     const pendingOrders   = allOrders.filter(o => o.status === "pending").length;
     const deliveredOrders = allOrders.filter(o => o.status === "delivered").length;
     const cancelledOrders = allOrders.filter(o => o.status === "cancelled").length;
+    const thisMonthProfit = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= startOfThisMonth && o.status === "delivered").reduce((s, o) => s + (o.totalProfit || 0), 0);
+    const lastMonthProfit = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= startOfLastMonth && new Date(o.createdAt) <= endOfLastMonth && o.status === "delivered").reduce((s, o) => s + (o.totalProfit || 0), 0);
+    const thisWeekCount   = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= startOfThisWeek).length;
+    const lastWeekCount   = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= startOfLastWeek && new Date(o.createdAt) < startOfThisWeek).length;
+    const totalProfit     = allOrders.filter(o => o.status === "delivered").reduce((s, o) => s + (o.totalProfit || 0), 0);
+    const weekChange      = lastWeekCount > 0 ? (((thisWeekCount - lastWeekCount) / lastWeekCount) * 100).toFixed(0) : null;
 
-    // أرباح هذا الشهر
-    const thisMonthOrders = allOrders.filter(o =>
-      o.createdAt && new Date(o.createdAt) >= startOfThisMonth && o.status === "delivered"
-    );
-    const thisMonthProfit = thisMonthOrders.reduce((s, o) => s + (o.totalProfit || 0), 0);
-
-    // أرباح الشهر الماضي
-    const lastMonthOrders = allOrders.filter(o =>
-      o.createdAt &&
-      new Date(o.createdAt) >= startOfLastMonth &&
-      new Date(o.createdAt) <= endOfLastMonth &&
-      o.status === "delivered"
-    );
-    const lastMonthProfit = lastMonthOrders.reduce((s, o) => s + (o.totalProfit || 0), 0);
-
-    // مبيعات هذا الأسبوع vs الأسبوع الماضي
-    const thisWeekOrders = allOrders.filter(o =>
-      o.createdAt && new Date(o.createdAt) >= startOfThisWeek
-    );
-    const lastWeekOrders = allOrders.filter(o =>
-      o.createdAt &&
-      new Date(o.createdAt) >= startOfLastWeek &&
-      new Date(o.createdAt) < startOfThisWeek
-    );
-
-    const thisWeekCount = thisWeekOrders.length;
-    const lastWeekCount = lastWeekOrders.length;
-    const weekChange    = lastWeekCount > 0
-      ? (((thisWeekCount - lastWeekCount) / lastWeekCount) * 100).toFixed(0)
-      : null;
-
-    // إجمالي الأرباح الكلية
-    const totalProfit = allOrders
-      .filter(o => o.status === "delivered")
-      .reduce((s, o) => s + (o.totalProfit || 0), 0);
-
-    // ── أكثر المنتجات مبيعاً للتاجر ──
     const topProductsRaw = await db.execute(sql`
       SELECT p.id, p.name, p.stock, p.wholesale_price, p.suggested_price, p.discount,
              COALESCE(SUM(oi.quantity), 0) as total_sold
-      FROM order_items oi
-      JOIN orders o ON o.id = oi.order_id
-      JOIN products p ON p.id = oi.product_id
+      FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id
       WHERE o.merchant_id = ${merchantId} AND o.status = 'delivered'
       GROUP BY p.id, p.name, p.stock, p.wholesale_price, p.suggested_price, p.discount
-      ORDER BY total_sold DESC
-      LIMIT 5
+      ORDER BY total_sold DESC LIMIT 5
     `);
-    const topProducts = topProductsRaw.rows as any[];
 
-    // ── المنتجات التي يبيعها التاجر (بناءً على طلباته) ──
     const merchantProductsRaw = await db.execute(sql`
       SELECT DISTINCT p.id, p.name, p.stock, p.wholesale_price, p.suggested_price, p.discount, p.is_active
-      FROM order_items oi
-      JOIN orders o ON o.id = oi.order_id
-      JOIN products p ON p.id = oi.product_id
-      WHERE o.merchant_id = ${merchantId}
-      LIMIT 20
+      FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id
+      WHERE o.merchant_id = ${merchantId} LIMIT 20
     `);
-    const merchantProducts = merchantProductsRaw.rows as any[];
-
-    // ── منتجات قريبة من النفاد (التاجر يبيعها) ──
-    const lowStockProducts = merchantProducts.filter((p: any) => p.stock > 0 && p.stock <= 10);
+    const merchantProducts   = merchantProductsRaw.rows as any[];
+    const lowStockProducts   = merchantProducts.filter((p: any) => p.stock > 0 && p.stock <= 10);
     const outOfStockProducts = merchantProducts.filter((p: any) => p.stock === 0);
 
-    // ── الطلبات المعلقة التفصيلية ──
-    const pendingOrdersDetail = allOrders
-      .filter(o => o.status === "pending")
-      .slice(0, 5)
-      .map(o => {
-        const hoursAgo = o.createdAt
-          ? Math.floor((now.getTime() - new Date(o.createdAt).getTime()) / 3600000)
-          : 0;
-        return `طلب #${o.id} (منذ ${hoursAgo} ساعة)`;
-      });
+    const pendingOrdersDetail = allOrders.filter(o => o.status === "pending").slice(0, 5)
+      .map(o => `طلب #${o.id} (منذ ${o.createdAt ? Math.floor((now.getTime() - new Date(o.createdAt).getTime()) / 3600000) : 0} ساعة)`);
 
-    // ── آخر سحب ──
-    const lastWithdrawal = await db
-      .select()
-      .from(withdrawals)
-      .where(eq(withdrawals.merchantId, merchantId))
-      .orderBy(desc(withdrawals.createdAt))
-      .limit(1);
+    const lastWithdrawal = await db.select().from(withdrawals).where(eq(withdrawals.merchantId, merchantId)).orderBy(desc(withdrawals.createdAt)).limit(1);
 
-    // ── ترتيب التاجر مقارنة بالآخرين ──
     const rankingRaw = await db.execute(sql`
-      SELECT merchant_id, SUM(total_profit) as total_profit
-      FROM orders
-      WHERE status = 'delivered'
-        AND created_at >= ${startOfThisMonth.toISOString()}
-      GROUP BY merchant_id
-      ORDER BY total_profit DESC
+      SELECT merchant_id, SUM(total_profit) as total_profit FROM orders
+      WHERE status = 'delivered' AND created_at >= ${startOfThisMonth.toISOString()}
+      GROUP BY merchant_id ORDER BY total_profit DESC
     `);
-    const ranking = rankingRaw.rows as any[];
-    const merchantRank = ranking.findIndex((r: any) => r.merchant_id === merchantId) + 1;
+    const ranking        = rankingRaw.rows as any[];
+    const merchantRank   = ranking.findIndex((r: any) => r.merchant_id === merchantId) + 1;
     const totalMerchants = ranking.length;
 
-    // ── منتجات مقترحة للتاجر (مو باعها من قبل، مخزون وفير) ──
     const suggestedProductsRaw = await db.execute(sql`
       SELECT p.id, p.name, p.stock, p.suggested_price, p.wholesale_price, p.discount, p.category
-      FROM products p
-      WHERE p.is_active = TRUE AND p.stock > 20
-        AND p.id NOT IN (
-          SELECT DISTINCT oi.product_id
-          FROM order_items oi
-          JOIN orders o ON o.id = oi.order_id
-          WHERE o.merchant_id = ${merchantId}
-        )
-      ORDER BY p.stock DESC
-      LIMIT 5
+      FROM products p WHERE p.is_active = TRUE AND p.stock > 20
+        AND p.id NOT IN (SELECT DISTINCT oi.product_id FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.merchant_id = ${merchantId})
+      ORDER BY p.stock DESC LIMIT 5
     `);
-    const suggestedProducts = suggestedProductsRaw.rows as any[];
 
-    // ── كل منتجات المنصة (للبحث بالـ ID أو الاسم) ──
     const allPlatformProductsRaw = await db.execute(sql`
-      SELECT p.id, p.name, p.stock, p.suggested_price, p.wholesale_price, p.discount, p.category, p.is_active
-      FROM products p
-      WHERE p.is_active = TRUE
-      ORDER BY p.id ASC
-      LIMIT 100
+      SELECT p.id, p.name, p.stock, p.suggested_price, p.wholesale_price, p.discount, p.category, p.selling_price_min
+      FROM products p WHERE p.is_active = TRUE ORDER BY p.id ASC LIMIT 100
     `);
     const allPlatformProducts = allPlatformProductsRaw.rows as any[];
 
-    // ── تجميع السياق ──
     const profitChangeText = lastMonthProfit > 0
       ? thisMonthProfit > lastMonthProfit
-        ? `📈 أرباح هذا الشهر أعلى بـ ${((thisMonthProfit - lastMonthProfit) / lastMonthProfit * 100).toFixed(0)}% عن الشهر الماضي`
-        : `📉 أرباح هذا الشهر أقل بـ ${((lastMonthProfit - thisMonthProfit) / lastMonthProfit * 100).toFixed(0)}% عن الشهر الماضي`
-      : "أول شهر للتاجر";
+        ? `📈 أعلى بـ ${((thisMonthProfit - lastMonthProfit) / lastMonthProfit * 100).toFixed(0)}% عن الشهر الماضي`
+        : `📉 أقل بـ ${((lastMonthProfit - thisMonthProfit) / lastMonthProfit * 100).toFixed(0)}% عن الشهر الماضي`
+      : "أول شهر";
 
     const weekChangeText = weekChange !== null
-      ? Number(weekChange) >= 0
-        ? `📈 طلبات هذا الأسبوع أعلى بـ ${weekChange}% عن الأسبوع الماضي`
-        : `📉 طلبات هذا الأسبوع أقل بـ ${Math.abs(Number(weekChange))}% عن الأسبوع الماضي`
-      : "أول أسبوع للتاجر";
+      ? Number(weekChange) >= 0 ? `📈 +${weekChange}% عن الأسبوع الماضي` : `📉 ${weekChange}% عن الأسبوع الماضي`
+      : "أول أسبوع";
 
     return `
-━━━ بيانات التاجر (سرية - لا تشاركها) ━━━
+━━━ بيانات التاجر ━━━
 الاسم: ${merchant.storeName}
 الرصيد المتاح: ${(merchant.balance || 0).toLocaleString()} د.ع
 الرصيد المعلق: ${(merchant.pendingBalance || 0).toLocaleString()} د.ع
-${lastWithdrawal[0] ? `آخر سحب: ${lastWithdrawal[0].amount.toLocaleString()} د.ع (${lastWithdrawal[0].status === 'completed' ? 'مكتمل' : 'معلق'})` : 'لا يوجد سحب سابق'}
+${lastWithdrawal[0] ? `آخر سحب: ${(lastWithdrawal[0] as any).amount?.toLocaleString()} د.ع (${(lastWithdrawal[0] as any).status === 'completed' ? 'مكتمل' : 'معلق'})` : 'لا يوجد سحب سابق'}
 
 ━━━ الأداء ━━━
-إجمالي الطلبات: ${totalOrders} طلب
-- مكتمل: ${deliveredOrders} | معلق: ${pendingOrders} | ملغي: ${cancelledOrders}
-إجمالي الأرباح الكلية: ${totalProfit.toLocaleString()} د.ع
-أرباح هذا الشهر: ${thisMonthProfit.toLocaleString()} د.ع
-أرباح الشهر الماضي: ${lastMonthProfit.toLocaleString()} د.ع
-${profitChangeText}
-طلبات هذا الأسبوع: ${thisWeekCount} | الأسبوع الماضي: ${lastWeekCount}
-${weekChangeText}
-${merchantRank > 0 ? `ترتيبه بين التجار هذا الشهر: #${merchantRank} من ${totalMerchants} تاجر` : ''}
+الطلبات: ${totalOrders} إجمالي | ${deliveredOrders} مكتمل | ${pendingOrders} معلق | ${cancelledOrders} ملغي
+إجمالي الأرباح: ${totalProfit.toLocaleString()} د.ع
+هذا الشهر: ${thisMonthProfit.toLocaleString()} د.ع | الشهر الماضي: ${lastMonthProfit.toLocaleString()} د.ع (${profitChangeText})
+هذا الأسبوع: ${thisWeekCount} طلب | الماضي: ${lastWeekCount} (${weekChangeText})
+${merchantRank > 0 ? `الترتيب: #${merchantRank} من ${totalMerchants} تاجر هذا الشهر` : ''}
 
 ━━━ الطلبات المعلقة ━━━
 ${pendingOrders === 0 ? 'لا توجد طلبات معلقة ✅' : pendingOrdersDetail.join('\n')}
 
 ━━━ أكثر منتجاته مبيعاً ━━━
-${topProducts.length === 0 ? 'لم يبع بعد' : topProducts.map((p: any, i: number) => {
-  const discountedWs = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
-  const profit = Math.max(0, (p.suggested_price || 0) - discountedWs);
-  const profitText = profit > 0 ? `${Math.round(profit).toLocaleString()} د.ع` : "يحتاج تسعير";
-  const sellPrice = p.suggested_price || 0;
-  return `${i + 1}. ${p.name} — مباع: ${p.total_sold}ق — سعر البيع للزبون: ${sellPrice.toLocaleString()}د.ع — ربحك/قطعة: ${profitText} — مخزون: ${p.stock}`;
+${(topProductsRaw.rows as any[]).length === 0 ? 'لم يبع بعد' : (topProductsRaw.rows as any[]).map((p: any, i: number) => {
+  const ws     = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
+  const profit = Math.max(0, (p.suggested_price || 0) - ws);
+  return `${i + 1}. ${p.name} | مباع: ${p.total_sold}ق | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربحك: ${Math.round(profit).toLocaleString()}د.ع | مخزون: ${p.stock}`;
 }).join('\n')}
 
 ━━━ تحذيرات المخزون ━━━
 ${lowStockProducts.length === 0 && outOfStockProducts.length === 0
   ? 'المخزون بخير ✅'
-  : [
-      ...outOfStockProducts.map((p: any) => `❌ ${p.name} — نفد المخزون`),
-      ...lowStockProducts.map((p: any) => `⚠️ ${p.name} — باقي ${p.stock} قطعة فقط`),
-    ].join('\n')}
+  : [...outOfStockProducts.map((p: any) => `❌ ${p.name} — نفد`), ...lowStockProducts.map((p: any) => `⚠️ ${p.name} — باقي ${p.stock}`)].join('\n')}
 
 ━━━ منتجات مقترحة لم يجربها بعد ━━━
-${suggestedProducts.length === 0 ? 'جرب كل المنتجات!' : suggestedProducts.map((p: any) => {
-  const discountedWs2 = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
-  const profit2 = Math.max(0, (p.suggested_price || 0) - discountedWs2);
-  const profitText2 = profit2 > 0 ? `${Math.round(profit2).toLocaleString()} د.ع` : "يحتاج تسعير";
-  const sellPrice2 = p.suggested_price || 0;
-  return `- ${p.name} (${p.category}) — سعر البيع للزبون: ${sellPrice2.toLocaleString()}د.ع — ربحك: ${profitText2} — مخزون: ${p.stock}`;
+${(suggestedProductsRaw.rows as any[]).length === 0 ? 'جرب كل المنتجات!' : (suggestedProductsRaw.rows as any[]).map((p: any) => {
+  const ws2     = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
+  const profit2 = Math.max(0, (p.suggested_price || 0) - ws2);
+  return `- ${p.name} (${p.category}) | جملة: ${Math.round(ws2).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح: ${Math.round(profit2).toLocaleString()}د.ع | مخزون: ${p.stock}`;
 }).join('\n')}
 
-━━━ قائمة كل منتجات المنصة (للبحث بالـ ID أو الاسم) ━━━
+━━━ كل منتجات المنصة ━━━
 ${allPlatformProducts.map((p: any) => {
-  const dws = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
-  const pr  = Math.max(0, (p.suggested_price || 0) - dws);
-  const sellP = p.suggested_price || 0;
-  return `ID:${p.id} | ${p.name} | سعر_البيع_للزبون:${sellP.toLocaleString()}د.ع | ربحك:${Math.round(pr).toLocaleString()}د.ع | مخزون:${p.stock} | ${p.category}`;
+  const ws3     = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
+  const profit3 = Math.max(0, (p.suggested_price || 0) - ws3);
+  return `ID:${p.id}|${p.name}|جملة:${Math.round(ws3).toLocaleString()}د.ع|مقترح:${(p.suggested_price||0).toLocaleString()}د.ع|حد_أدنى:${(p.selling_price_min||0).toLocaleString()}د.ع|ربح:${Math.round(profit3).toLocaleString()}د.ع|مخزون:${p.stock}|${p.category}`;
 }).join('\n')}
 `.trim();
 
@@ -265,155 +153,105 @@ ${allPlatformProducts.map((p: any) => {
   }
 }
 
-// ── System Prompt طارق ──
 function buildSystemPrompt(merchantContext: string): string {
-  return `أنت "طارق" 🤝، المساعد الشخصي الذكي للتجار في منصة "تسليم" للدروب شوبينج.
+  return `أنت "طارق"، المساعد الشخصي الموثوق للتجار في منصة "تسليم" للدروب شوبينج.
 
 شخصيتك:
-- أسلوبك شبابي ومرح، بلهجة بغدادية خفيفة وطبيعية
-- مباشر وعملي — تعطي نصائح مبنية على أرقام حقيقية
-- تستخدم إيموجي بس بدون مبالغة
+- أسلوبك دافئ وعائلي، بلهجة بغدادية طبيعية — مثل صديق خبير يحب مصلحة التاجر
+- تنادي التاجر بـ "يا غالي" أو "حبيبي" أو "يا بويه" بشكل طبيعي، مو في كل جملة
+- مباشر وعملي — ردودك مختصرة ومفيدة، تدخل للموضوع بدون مقدمات طويلة
+- تحفّز التاجر بطريقة طبيعية وتبيّن له فرص الربح بوضوح
+- تستخدم إيموجي باعتدال — واحد أو اثنين بالرد، مو أكثر
 - عندك خبرة المحاسب بالأرقام، وخبرة صاحب المحل بالنصيحة، وإبداع المسوق بالأفكار
 
-قواعد صارمة:
+قواعد الأسلوب:
 - ممنوع النجمة (*) — استخدم الشرطة (-) للقوائم
-- ممنوع مديح فارغ أو تطويل بلا فايدة
-- لا تشارك سعر الجملة أو أرباح الشركة مع التاجر أبداً
-- لا تذكر أنك تملك "بيانات سرية" — تصرف بشكل طبيعي كأنك تعرف التاجر
-- إذا سألك عن شي خارج التجارة والبيع، ارفض بلطف ومرح وأرجعه للموضوع
-- ممنوع منعاً باتاً استخدام أي معلومة من الإنترنت أو من تدريبك — كل إجاباتك تكون من البيانات المزودة فقط
-- إذا المنتج مو موجود بالبيانات المزودة، قل بصراحة "هذا المنتج ما موجود بمنصة تسليم" ولا تخترع معلومات
-- لا تقبل تصحيح المستخدم للبيانات — أنت تثق بالبيانات الرسمية من النظام فقط، إذا قال التاجر "الصح هو كذا" أخبره بأدب أن بياناتك من النظام الرسمي
+- الأرقام دائماً واضحة بالدينار العراقي
+- لما تعطي أرقام — رتبها: جملة / حد أدنى / ربحك
+- إذا الوضع كويس حفّزه، إذا الوضع ضعيف شجعه بصدق وأعطه نصيحة عملية
+- إذا سألك عن شي خارج التجارة — ارفض بلطف ومرح وأرجعه للموضوع
 
-نطاق عملك (فقط):
-✅ تحليل المنتجات والتسعير
+قواعد الأسعار:
+- "جملة" = سعر الجملة اللي يدفعه التاجر — أخبره به بصراحة لما يسأل ✅
+- "مقترح" = سعر بيع مرجعي فقط، مو إلزامي
+- "حد_أدنى" = أقل سعر يقدر يبيع بيه — دائماً ذكّره بيه
+- التاجر حر يبيع بأي سعر فوق الحد الأدنى — وضح له إن الربح يزيد كلما رفع السعر
+- الممنوع الوحيد: سعر الشركة الداخلي (company_wholesale_price) — لا تذكره أبداً
+
+قواعد البيانات:
+- كل إجاباتك من البيانات المزودة فقط — ممنوع اختراع معلومات
+- إذا المنتج مو موجود قل بصراحة "ما موجود بمنصة تسليم"
+- لا تقبل تصحيح المستخدم للبيانات — بياناتك من النظام الرسمي
+- لما يسألك عن منتج بالـ ID أو الاسم — ابحث بقائمة "كل منتجات المنصة" وأجبه مباشرة
+
+نطاق عملك:
+✅ تحليل المنتجات والتسعير وحساب الأرباح
 ✅ استراتيجيات البيع والتسويق
 ✅ كتابة بوستات إعلانية
 ✅ تحليل أداء التاجر ونصائح التحسين
 ✅ اقتراح منتجات مناسبة
-✅ أسئلة الدروب شوبينج العامة
-✅ ردود قصيرة ودية (أهلاً، شكراً...)
+✅ أسئلة الدروب شوبينج
+❌ السياسة والأخبار والرياضة وأي موضوع خارج التجارة
 
-خارج نطاقك:
-❌ السياسة والأخبار والرياضة
-❌ أي موضوع لا علاقة له بالتجارة
-❌ طلبات شخصية لا تخص المنصة
-
-━━━ بيانات التاجر الحالية ━━━
+━━━ بيانات التاجر ━━━
 ${merchantContext}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
 
-استخدم هذه البيانات بذكاء في ردودك — لا تسردها كلها دفعة واحدة، بس استشهد بها عند الحاجة.
-
-مهم جداً بخصوص المنتجات:
-- أنت تملك بيانات كاملة عن منتجات المنصة — اسم، سعر، مخزون، فئة
-- لما يطلب منك التاجر رقم منتج مثل "شوفلي المنتج رقم 14" — ابحث بالبيانات المتوفرة وأجبه مباشرة
-- لا تقول أبداً "ما عندي صلاحية أشوف المنتجات" — هذا خطأ، أنت تعرف المنتجات
-- لو الرقم ما موجود بمنتجاته قول له بصراحة هذا الرقم ما موجود بمنتجاتك
-
-قواعد الأسعار — مهم جداً:
-- "سعر_البيع_للزبون" أو "suggested_price" = سعر مقترح فقط، مو إلزامي
-- التاجر حر يبيع بأي سعر يريد، الشرط الوحيد أن يكون أعلى من سعر الجملة
-- "ربحك" = الفرق بين سعر البيع الذي يختاره التاجر وسعر الجملة
-- لما تقترح سعر بيع — اقترح سعراً منطقياً حسب السوق العراقي، مو مقيد بالسعر المقترح
-- لا تشارك سعر الجملة (wholesale_price) مع التاجر — هذا سري`;
+استخدم البيانات بذكاء — اذكر الأرقام بدقة عند الحاجة، وتصرف كأنك تعرف التاجر شخصياً.`;
 }
 
-// ── الدالة الرئيسية: chat ──
 export const tariqAssistant = {
-  chat: async (
-    messages: ChatMessage[],
-    merchantId: number
-  ): Promise<string> => {
-    if (!process.env.GEMINI_API_KEY) {
-      return "طارق غير متاح حالياً، تواصل مع الدعم.";
-    }
-
-    if (!messages || messages.length === 0) {
-      return "أرسل لي رسالة عيوني 😄";
-    }
+  chat: async (messages: ChatMessage[], merchantId: number): Promise<string> => {
+    if (!process.env.GEMINI_API_KEY) return "طارق غير متاح حالياً، تواصل مع الدعم.";
+    if (!messages || messages.length === 0) return "أرسل لي رسالة عيوني 😄";
 
     try {
-      // جمع بيانات التاجر
       const merchantContext = await getMerchantContext(merchantId);
       const systemPrompt    = buildSystemPrompt(merchantContext);
-
-      // إبقاء آخر 20 رسالة فقط لتجنب تجاوز الـ context
-      const recentMessages = messages.slice(-20);
+      const recentMessages  = messages.slice(-20);
 
       const MAX_RETRIES = 3;
       let lastError: any;
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const model = genAI.getGenerativeModel({
-            model: GEMINI_MODEL,
-            systemInstruction: systemPrompt,
-          });
+          const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: systemPrompt });
 
-          // كل الرسائل ما عدا الأخيرة — مع ضمان أول رسالة دايماً user
           let history = recentMessages.slice(0, -1);
-          while (history.length > 0 && history[0].role !== 'user') {
-            history = history.slice(1);
-          }
+          while (history.length > 0 && history[0].role !== 'user') history = history.slice(1);
 
-          const chat = model.startChat({ history });
-
+          const chat        = model.startChat({ history });
           const lastMessage = recentMessages[recentMessages.length - 1];
-          const result = await chat.sendMessage(lastMessage.parts[0].text);
-          let text = result.response.text();
+          const result      = await chat.sendMessage(lastMessage.parts[0].text);
+          let text          = result.response.text().replace(/\*/g, "");
 
-          // تنظيف النجوم
-          text = text.replace(/\*/g, "");
-
-          if (!text || text.trim().length === 0) {
-            throw new Error("EMPTY_RESPONSE");
-          }
-
+          if (!text || text.trim().length === 0) throw new Error("EMPTY_RESPONSE");
           return text;
 
         } catch (error: any) {
           lastError = error;
           const msg = error?.message || String(error);
-
           if ((msg.includes("quota") || msg.includes("429") || msg.includes("rate")) && attempt < MAX_RETRIES) {
-            console.log(`طارق مشغول.. محاولة ${attempt} من ${MAX_RETRIES}`);
-            await sleep(2000);
+            await sleep(2000 * attempt);
             continue;
           }
           break;
         }
       }
-
       throw lastError;
 
     } catch (error: any) {
       const msg = error?.message || String(error);
       console.error("Tariq error:", msg);
-
-      if (msg.includes("404") || msg.includes("MODEL")) {
-        return "خلل في موديل الذكاء الاصطناعي، تواصل مع المطور.";
-      }
-      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
-        return "مفتاح Gemini منتهي أو غلط، تواصل مع المطور.";
-      }
-      if (msg.includes("quota") || msg.includes("429") || msg.includes("rate")) {
-        return "طارق مشغول هسه، انتظر دقيقة وحاول مرة ثانية 😄";
-      }
-
-      return "صار عندي خلل فني بسيط، حاول مرة ثانية عيوني.";
+      if (msg.includes("404") || msg.includes("MODEL"))                         return "خلل في موديل الذكاء الاصطناعي، تواصل مع المطور.";
+      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) return "مفتاح Gemini منتهي أو غلط، تواصل مع المطور.";
+      if (msg.includes("quota") || msg.includes("429") || msg.includes("rate"))  return "طارق مشغول هسه، انتظر دقيقة وحاول مرة ثانية 😄";
+      return "صار خلل فني، حاول مرة ثانية عيوني.";
     }
   },
 
-  // ── تحليل منتج محدد (نفس وظيفة صقر القديمة، محسّنة) ──
   analyzeProduct: async (identifier: string, merchantId: number): Promise<string> => {
-    // نحوّل طلب تحليل المنتج لمحادثة عادية
-    const messages: ChatMessage[] = [
-      {
-        role: "user",
-        parts: [{ text: `حلل لي هذا المنتج: ${identifier}` }],
-      },
-    ];
+    const messages: ChatMessage[] = [{ role: "user", parts: [{ text: `حلل لي هذا المنتج: ${identifier}` }] }];
     return tariqAssistant.chat(messages, merchantId);
   },
 };
