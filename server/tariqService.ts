@@ -2,30 +2,13 @@ import { db } from "./db";
 import { products, orders, orderItems, withdrawals, users } from "@shared/schema";
 import { eq, sql, and, desc, gte, lt } from "drizzle-orm";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { Ai } from '@cloudflare/ai';
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-// ── تهيئة Cloudflare AI ──
-let cloudflareAi: Ai | null = null;
-if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN) {
-  try {
-    cloudflareAi = new Ai({
-      accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-      apiToken: process.env.CLOUDFLARE_API_TOKEN,
-    });
-    console.log("✅ Cloudflare AI initialized");
-  } catch (err) {
-    console.error("Cloudflare AI init error:", err);
-  }
-} else {
-  console.warn("⚠️ Cloudflare AI not configured (missing env vars)");
+if (!process.env.GEMINI_API_KEY) {
+  console.warn("⚠️  GEMINI_API_KEY is not set - Tariq AI will not work");
 }
 
-// ── تهيئة Gemini (كـ fallback) ──
-if (!process.env.GEMINI_API_KEY) {
-  console.warn("⚠️ GEMINI_API_KEY is not set - Gemini fallback will not work");
-}
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const GEMINI_MODEL = "models/gemini-2.5-flash-lite";
 
@@ -312,76 +295,23 @@ export const tariqAssistant = {
     messages: ChatMessage[],
     merchantId: number
   ): Promise<string> => {
+    if (!process.env.GEMINI_API_KEY) {
+      return "طارق غير متاح حالياً، تواصل مع الدعم.";
+    }
+
     if (!messages || messages.length === 0) {
       return "أرسل لي رسالة عيوني 😄";
     }
 
-    // جمع بيانات التاجر (مرة وحدة عشان نستخدمها مع كلا الموديلين)
-    let merchantContext = "";
-    let systemPrompt = "";
     try {
-      merchantContext = await getMerchantContext(merchantId);
-      systemPrompt = buildSystemPrompt(merchantContext);
-    } catch (err) {
-      console.error("Context error:", err);
-      systemPrompt = "أنت مساعد طارق للتجار في منصة تسليم.";
-    }
+      // جمع بيانات التاجر
+      const merchantContext = await getMerchantContext(merchantId);
+      const systemPrompt    = buildSystemPrompt(merchantContext);
 
-    // إبقاء آخر 20 رسالة فقط لتجنب تجاوز الـ context
-    const recentMessages = messages.slice(-20);
+      // إبقاء آخر 20 رسالة فقط لتجنب تجاوز الـ context
+      const recentMessages = messages.slice(-20);
 
-    // ──────────────────────────────────────────────
-    // 🚀 المحاولة 1: استخدام Cloudflare AI
-    // ──────────────────────────────────────────────
-    if (cloudflareAi) {
-      try {
-        console.log("🚀 Trying Cloudflare AI...");
-        
-        // تحويل صيغة الرسائل إلى صيغة Cloudflare
-        const chatMessages = [
-          { role: 'system', content: systemPrompt },
-          ...recentMessages.map((m: ChatMessage) => ({
-            role: m.role === 'user' ? 'user' : 'assistant',
-            content: m.parts[0].text
-          }))
-        ];
-
-        // ✅ تم تغيير اسم الموديل مع تجاوز TypeScript
-const response = await (cloudflareAi as any).run('@cf/meta/llama-2-7b-chat-hf-lm', {
-  messages: chatMessages,
-  max_tokens: 800,
-  temperature: 0.7,
-  top_p: 0.9,
-});
-
-        let text = (response as any).response;
-        text = text.replace(/\*/g, ""); // تنظيف النجوم
-
-        if (text && text.trim().length > 0) {
-          console.log("✅ Cloudflare AI responded");
-          return text;
-        } else {
-          console.warn("⚠️ Cloudflare AI returned empty response");
-        }
-      } catch (err: any) {
-        console.error("❌ Cloudflare AI error:", err?.message || err);
-        // نستمر إلى fallback
-      }
-    } else {
-      console.log("ℹ️ Cloudflare AI not available, using Gemini fallback");
-    }
-
-    // ──────────────────────────────────────────────
-    // 🔄 Fallback: استخدام Gemini (الكود القديم)
-    // ──────────────────────────────────────────────
-    if (!process.env.GEMINI_API_KEY) {
-      return "طارق غير متاح حالياً (لا موديل AI متوفر)، تواصل مع الدعم.";
-    }
-
-    try {
-      console.log("🔄 Falling back to Gemini AI...");
-      
-      const MAX_RETRIES = 2;
+      const MAX_RETRIES = 3;
       let lastError: any;
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -410,7 +340,6 @@ const response = await (cloudflareAi as any).run('@cf/meta/llama-2-7b-chat-hf-lm
             throw new Error("EMPTY_RESPONSE");
           }
 
-          console.log("✅ Gemini AI responded");
           return text;
 
         } catch (error: any) {
@@ -418,7 +347,7 @@ const response = await (cloudflareAi as any).run('@cf/meta/llama-2-7b-chat-hf-lm
           const msg = error?.message || String(error);
 
           if ((msg.includes("quota") || msg.includes("429") || msg.includes("rate")) && attempt < MAX_RETRIES) {
-            console.log(`Gemini مشغول.. محاولة ${attempt} من ${MAX_RETRIES}`);
+            console.log(`طارق مشغول.. محاولة ${attempt} من ${MAX_RETRIES}`);
             await sleep(2000);
             continue;
           }
@@ -430,7 +359,7 @@ const response = await (cloudflareAi as any).run('@cf/meta/llama-2-7b-chat-hf-lm
 
     } catch (error: any) {
       const msg = error?.message || String(error);
-      console.error("Gemini error:", msg);
+      console.error("Tariq error:", msg);
 
       if (msg.includes("404") || msg.includes("MODEL")) {
         return "خلل في موديل الذكاء الاصطناعي، تواصل مع المطور.";
@@ -446,8 +375,9 @@ const response = await (cloudflareAi as any).run('@cf/meta/llama-2-7b-chat-hf-lm
     }
   },
 
-  // ── تحليل منتج محدد ──
+  // ── تحليل منتج محدد (نفس وظيفة صقر القديمة، محسّنة) ──
   analyzeProduct: async (identifier: string, merchantId: number): Promise<string> => {
+    // نحوّل طلب تحليل المنتج لمحادثة عادية
     const messages: ChatMessage[] = [
       {
         role: "user",
