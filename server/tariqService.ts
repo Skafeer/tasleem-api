@@ -1,25 +1,21 @@
 import { db } from "./db";
 import { products, orders, orderItems, withdrawals, users } from "@shared/schema";
 import { eq, sql, and, desc, gte, lt } from "drizzle-orm";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-if (!process.env.DEEPSEEK_API_KEY) {
-  console.warn("⚠️  DEEPSEEK_API_KEY is not set - Tariq AI will not work");
+if (!process.env.GEMINI_API_KEY) {
+  console.warn("⚠️  GEMINI_API_KEY is not set - Tariq AI will not work");
 }
 
-const DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions";
-const DEEPSEEK_MODEL   = "deepseek-chat"; // DeepSeek-V3
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const GEMINI_MODEL = "models/gemini-1.5-flash";
 
 // ── أنواع المحادثة ──
 export type ChatMessage = {
   role: "user" | "model";
   parts: [{ text: string }];
-};
-
-// ── نوع رسالة DeepSeek (OpenAI format) ──
-type DSMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
 };
 
 // ── جمع بيانات التاجر الكاملة من DB ──
@@ -299,7 +295,7 @@ export const tariqAssistant = {
     messages: ChatMessage[],
     merchantId: number
   ): Promise<string> => {
-    if (!process.env.DEEPSEEK_API_KEY) {
+    if (!process.env.GEMINI_API_KEY) {
       return "طارق غير متاح حالياً، تواصل مع الدعم.";
     }
 
@@ -315,41 +311,27 @@ export const tariqAssistant = {
       // إبقاء آخر 20 رسالة فقط لتجنب تجاوز الـ context
       const recentMessages = messages.slice(-20);
 
-      // تحويل رسائل Gemini format → OpenAI/DeepSeek format
-      const dsMessages: DSMessage[] = [
-        { role: "system", content: systemPrompt },
-        ...recentMessages.map(m => ({
-          role: m.role === "user" ? "user" : "assistant" as "user" | "assistant",
-          content: m.parts[0].text,
-        })),
-      ];
-
       const MAX_RETRIES = 3;
       let lastError: any;
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const response = await fetch(DEEPSEEK_API_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-            },
-            body: JSON.stringify({
-              model: DEEPSEEK_MODEL,
-              messages: dsMessages,
-              max_tokens: 1000,
-              temperature: 0.7,
-            }),
+          const model = genAI.getGenerativeModel({
+            model: GEMINI_MODEL,
+            systemInstruction: systemPrompt,
           });
 
-          if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`DS_${response.status}: ${errText}`);
+          // كل الرسائل ما عدا الأخيرة — مع ضمان أول رسالة دايماً user
+          let history = recentMessages.slice(0, -1);
+          while (history.length > 0 && history[0].role !== 'user') {
+            history = history.slice(1);
           }
 
-          const data = await response.json();
-          let text = data?.choices?.[0]?.message?.content || "";
+          const chat = model.startChat({ history });
+
+          const lastMessage = recentMessages[recentMessages.length - 1];
+          const result = await chat.sendMessage(lastMessage.parts[0].text);
+          let text = result.response.text();
 
           // تنظيف النجوم
           text = text.replace(/\*/g, "");
@@ -364,9 +346,9 @@ export const tariqAssistant = {
           lastError = error;
           const msg = error?.message || String(error);
 
-          if ((msg.includes("429") || msg.includes("rate") || msg.includes("overloaded")) && attempt < MAX_RETRIES) {
+          if ((msg.includes("quota") || msg.includes("429") || msg.includes("rate")) && attempt < MAX_RETRIES) {
             console.log(`طارق مشغول.. محاولة ${attempt} من ${MAX_RETRIES}`);
-            await sleep(2000 * attempt);
+            await sleep(2000);
             continue;
           }
           break;
@@ -379,14 +361,14 @@ export const tariqAssistant = {
       const msg = error?.message || String(error);
       console.error("Tariq error:", msg);
 
-      if (msg.includes("DS_401") || msg.includes("DS_403")) {
-        return "مفتاح DeepSeek منتهي أو غلط، تواصل مع المطور.";
+      if (msg.includes("404") || msg.includes("MODEL")) {
+        return "خلل في موديل الذكاء الاصطناعي، تواصل مع المطور.";
       }
-      if (msg.includes("DS_429") || msg.includes("rate") || msg.includes("overloaded")) {
+      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
+        return "مفتاح Gemini منتهي أو غلط، تواصل مع المطور.";
+      }
+      if (msg.includes("quota") || msg.includes("429") || msg.includes("rate")) {
         return "طارق مشغول هسه، انتظر دقيقة وحاول مرة ثانية 😄";
-      }
-      if (msg.includes("DS_5")) {
-        return "السيرفر مشغول هسه، حاول بعد ثواني 🙏";
       }
 
       return "صار عندي خلل فني بسيط، حاول مرة ثانية عيوني.";
