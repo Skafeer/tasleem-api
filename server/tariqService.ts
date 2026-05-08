@@ -10,7 +10,7 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const GEMINI_MODEL = "models/gemini-2.5-flash-lite";
+const GEMINI_MODEL = "gemini-1.5-flash";
 
 // ── أنواع المحادثة ──
 export type ChatMessage = {
