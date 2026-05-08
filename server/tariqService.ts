@@ -229,7 +229,8 @@ ${topProducts.length === 0 ? 'لم يبع بعد' : topProducts.map((p: any, i: 
   const discountedWs = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
   const profit = Math.max(0, (p.suggested_price || 0) - discountedWs);
   const profitText = profit > 0 ? `${Math.round(profit).toLocaleString()} د.ع` : "يحتاج تسعير";
-  return `${i + 1}. ${p.name} — ${p.total_sold} قطعة مباعة — ربح/قطعة: ${profitText} — مخزون: ${p.stock}`;
+  const sellPrice = p.suggested_price || 0;
+  return `${i + 1}. ${p.name} — مباع: ${p.total_sold}ق — سعر البيع للزبون: ${sellPrice.toLocaleString()}د.ع — ربحك/قطعة: ${profitText} — مخزون: ${p.stock}`;
 }).join('\n')}
 
 ━━━ تحذيرات المخزون ━━━
@@ -245,14 +246,16 @@ ${suggestedProducts.length === 0 ? 'جرب كل المنتجات!' : suggestedPr
   const discountedWs2 = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
   const profit2 = Math.max(0, (p.suggested_price || 0) - discountedWs2);
   const profitText2 = profit2 > 0 ? `${Math.round(profit2).toLocaleString()} د.ع` : "يحتاج تسعير";
-  return `- ${p.name} (${p.category}) — ربح محتمل: ${profitText2} — مخزون: ${p.stock}`;
+  const sellPrice2 = p.suggested_price || 0;
+  return `- ${p.name} (${p.category}) — سعر البيع للزبون: ${sellPrice2.toLocaleString()}د.ع — ربحك: ${profitText2} — مخزون: ${p.stock}`;
 }).join('\n')}
 
 ━━━ قائمة كل منتجات المنصة (للبحث بالـ ID أو الاسم) ━━━
 ${allPlatformProducts.map((p: any) => {
   const dws = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
   const pr  = Math.max(0, (p.suggested_price || 0) - dws);
-  return `ID:${p.id} | ${p.name} | مخزون:${p.stock} | ربح:${Math.round(pr).toLocaleString()}د.ع | ${p.category}`;
+  const sellP = p.suggested_price || 0;
+  return `ID:${p.id} | ${p.name} | سعر_البيع_للزبون:${sellP.toLocaleString()}د.ع | ربحك:${Math.round(pr).toLocaleString()}د.ع | مخزون:${p.stock} | ${p.category}`;
 }).join('\n')}
 `.trim();
 
@@ -306,7 +309,14 @@ ${merchantContext}
 - أنت تملك بيانات كاملة عن منتجات المنصة — اسم، سعر، مخزون، فئة
 - لما يطلب منك التاجر رقم منتج مثل "شوفلي المنتج رقم 14" — ابحث بالبيانات المتوفرة وأجبه مباشرة
 - لا تقول أبداً "ما عندي صلاحية أشوف المنتجات" — هذا خطأ، أنت تعرف المنتجات
-- لو الرقم ما موجود بمنتجاته قول له بصراحة هذا الرقم ما موجود بمنتجاتك`;
+- لو الرقم ما موجود بمنتجاته قول له بصراحة هذا الرقم ما موجود بمنتجاتك
+
+قواعد الأسعار — مهم جداً:
+- "سعر_البيع_للزبون" أو "suggested_price" = سعر مقترح فقط، مو إلزامي
+- التاجر حر يبيع بأي سعر يريد، الشرط الوحيد أن يكون أعلى من سعر الجملة
+- "ربحك" = الفرق بين سعر البيع الذي يختاره التاجر وسعر الجملة
+- لما تقترح سعر بيع — اقترح سعراً منطقياً حسب السوق العراقي، مو مقيد بالسعر المقترح
+- لا تشارك سعر الجملة (wholesale_price) مع التاجر — هذا سري`;
 }
 
 // ── الدالة الرئيسية: chat ──
