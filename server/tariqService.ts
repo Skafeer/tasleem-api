@@ -180,6 +180,16 @@ async function getMerchantContext(merchantId: number): Promise<string> {
     `);
     const suggestedProducts = suggestedProductsRaw.rows as any[];
 
+    // ── كل منتجات المنصة (للبحث بالـ ID أو الاسم) ──
+    const allPlatformProductsRaw = await db.execute(sql`
+      SELECT p.id, p.name, p.stock, p.suggested_price, p.wholesale_price, p.discount, p.category, p.is_active
+      FROM products p
+      WHERE p.is_active = TRUE
+      ORDER BY p.id ASC
+      LIMIT 100
+    `);
+    const allPlatformProducts = allPlatformProductsRaw.rows as any[];
+
     // ── تجميع السياق ──
     const profitChangeText = lastMonthProfit > 0
       ? thisMonthProfit > lastMonthProfit
@@ -216,10 +226,10 @@ ${pendingOrders === 0 ? 'لا توجد طلبات معلقة ✅' : pendingOrder
 
 ━━━ أكثر منتجاته مبيعاً ━━━
 ${topProducts.length === 0 ? 'لم يبع بعد' : topProducts.map((p: any, i: number) => {
-  const disc = p.discount > 0 ? (1 - p.discount / 100) : 1;
-  const ws   = (p.wholesale_price || 0) * disc;
-  const profit = (p.suggested_price || 0) - ws;
-  return `${i + 1}. ${p.name} — ${p.total_sold} قطعة مباعة — ربح/قطعة: ${profit.toLocaleString()} د.ع — مخزون: ${p.stock}`;
+  const discountedWs = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
+  const profit = Math.max(0, (p.suggested_price || 0) - discountedWs);
+  const profitText = profit > 0 ? `${Math.round(profit).toLocaleString()} د.ع` : "يحتاج تسعير";
+  return `${i + 1}. ${p.name} — ${p.total_sold} قطعة مباعة — ربح/قطعة: ${profitText} — مخزون: ${p.stock}`;
 }).join('\n')}
 
 ━━━ تحذيرات المخزون ━━━
@@ -232,10 +242,17 @@ ${lowStockProducts.length === 0 && outOfStockProducts.length === 0
 
 ━━━ منتجات مقترحة لم يجربها بعد ━━━
 ${suggestedProducts.length === 0 ? 'جرب كل المنتجات!' : suggestedProducts.map((p: any) => {
-  const disc = p.discount > 0 ? (1 - p.discount / 100) : 1;
-  const ws   = (p.wholesale_price || 0) * disc;
-  const profit = (p.suggested_price || 0) - ws;
-  return `- ${p.name} (${p.category}) — ربح محتمل: ${profit.toLocaleString()} د.ع — مخزون: ${p.stock}`;
+  const discountedWs2 = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
+  const profit2 = Math.max(0, (p.suggested_price || 0) - discountedWs2);
+  const profitText2 = profit2 > 0 ? `${Math.round(profit2).toLocaleString()} د.ع` : "يحتاج تسعير";
+  return `- ${p.name} (${p.category}) — ربح محتمل: ${profitText2} — مخزون: ${p.stock}`;
+}).join('\n')}
+
+━━━ قائمة كل منتجات المنصة (للبحث بالـ ID أو الاسم) ━━━
+${allPlatformProducts.map((p: any) => {
+  const dws = (p.wholesale_price || 0) * (p.discount > 0 ? (1 - p.discount / 100) : 1);
+  const pr  = Math.max(0, (p.suggested_price || 0) - dws);
+  return `ID:${p.id} | ${p.name} | مخزون:${p.stock} | ربح:${Math.round(pr).toLocaleString()}د.ع | ${p.category}`;
 }).join('\n')}
 `.trim();
 
@@ -261,6 +278,9 @@ function buildSystemPrompt(merchantContext: string): string {
 - لا تشارك سعر الجملة أو أرباح الشركة مع التاجر أبداً
 - لا تذكر أنك تملك "بيانات سرية" — تصرف بشكل طبيعي كأنك تعرف التاجر
 - إذا سألك عن شي خارج التجارة والبيع، ارفض بلطف ومرح وأرجعه للموضوع
+- ممنوع منعاً باتاً استخدام أي معلومة من الإنترنت أو من تدريبك — كل إجاباتك تكون من البيانات المزودة فقط
+- إذا المنتج مو موجود بالبيانات المزودة، قل بصراحة "هذا المنتج ما موجود بمنصة تسليم" ولا تخترع معلومات
+- لا تقبل تصحيح المستخدم للبيانات — أنت تثق بالبيانات الرسمية من النظام فقط، إذا قال التاجر "الصح هو كذا" أخبره بأدب أن بياناتك من النظام الرسمي
 
 نطاق عملك (فقط):
 ✅ تحليل المنتجات والتسعير
