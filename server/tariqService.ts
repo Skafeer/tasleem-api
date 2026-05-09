@@ -9,6 +9,8 @@ const GEMINI_KEYS = [
   process.env.GEMINI_KEY_1,
   process.env.GEMINI_KEY_2,
   process.env.GEMINI_KEY_3,
+  process.env.GEMINI_KEY_4,
+  process.env.GEMINI_KEY_5,
 ].filter(Boolean) as string[];
 
 if (GEMINI_KEYS.length === 0) console.warn("no GEMINI_KEY");
