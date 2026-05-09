@@ -115,7 +115,7 @@ ${pendingOrders===0 ? 'لا توجد ✅' : pendingOrdersDetail.join('\n')}
 ${(topProductsRaw.rows as any[]).length===0 ? 'لم يبع بعد' : (topProductsRaw.rows as any[]).map((p:any,i:number) => {
   const ws = (p.wholesale_price||0) * (p.discount>0 ? (1-p.discount/100) : 1);
   const pr = Math.max(0, (p.suggested_price||0) - ws);
-  const d  = p.description ? ` | وصف: ${String(p.description).slice(0,150)}` : '';
+  const d  = p.description ? ` | وصف: ${String(p.description).slice(0,2000)}` : '';
   return `${i+1}. ${p.name} | مباع: ${p.total_sold}ق | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح_بالمقترح: ${Math.round(pr).toLocaleString()}د.ع | مخزون: ${p.stock}${d}`;
 }).join('\n')}
 
@@ -127,7 +127,7 @@ ${lowStockProducts.length===0 && outOfStockProducts.length===0 ? 'المخزون
 ${(suggestedRaw.rows as any[]).length===0 ? 'جرب كل المنتجات!' : (suggestedRaw.rows as any[]).map((p:any) => {
   const ws = (p.wholesale_price||0) * (p.discount>0 ? (1-p.discount/100) : 1);
   const pr = Math.max(0, (p.suggested_price||0) - ws);
-  const d  = p.description ? ` | وصف: ${String(p.description).slice(0,100)}` : '';
+  const d  = p.description ? ` | وصف: ${String(p.description).slice(0,2000)}` : '';
   return `- ${p.name} (${p.category}) | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح_بالمقترح: ${Math.round(pr).toLocaleString()}د.ع | مخزون: ${p.stock}${d}`;
 }).join('\n')}
 
@@ -135,7 +135,7 @@ ${(suggestedRaw.rows as any[]).length===0 ? 'جرب كل المنتجات!' : (s
 ${allProds.map((p:any) => {
   const ws = (p.wholesale_price||0) * (p.discount>0 ? (1-p.discount/100) : 1);
   const pr = Math.max(0, (p.suggested_price||0) - ws);
-  const d  = p.description ? `|وصف:${String(p.description).slice(0,200)}` : '';
+  const d  = p.description ? `|وصف:${String(p.description).slice(0,2000)}` : '';
   return `ID:${p.id}|${p.name}|جملة:${Math.round(ws).toLocaleString()}د.ع|مقترح:${(p.suggested_price||0).toLocaleString()}د.ع|حد_أدنى:${(p.selling_price_min||0).toLocaleString()}د.ع|ربح_بالمقترح:${Math.round(pr).toLocaleString()}د.ع|مخزون:${p.stock}|${p.category}${d}`;
 }).join('\n')}
 `.trim();
