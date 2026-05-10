@@ -34,7 +34,7 @@ async function getMerchantContext(merchantId: number): Promise<string> {
     const endOfLastMonth   = new Date(now.getFullYear(), now.getMonth(), 0);
 
     const allOrders = await db
-      .select({ id: orders.id, status: orders.status, totalProfit: orders.totalProfit, totalAmount: orders.totalAmount, createdAt: orders.createdAt })
+      .select({ id: orders.id, status: orders.status, totalProfit: orders.totalProfit, totalAmount: orders.totalAmount, shippingCost: orders.shippingCost, createdAt: orders.createdAt })
       .from(orders).where(eq(orders.merchantId, merchantId)).orderBy(desc(orders.createdAt));
 
     const totalOrders     = allOrders.length;
@@ -66,6 +66,17 @@ async function getMerchantContext(merchantId: number): Promise<string> {
 
     const pendingOrdersDetail = allOrders.filter(o => o.status === "pending").slice(0,5)
       .map(o => `طلب #${o.id} (منذ ${o.createdAt ? Math.floor((now.getTime()-new Date(o.createdAt).getTime())/3600000) : 0} ساعة)`);
+
+    // ── آخر 10 طلبات مع تفاصيل الربح الكاملة ──
+    const recentOrdersDetail = allOrders.slice(0,10).map(o => {
+      const hoursAgo  = o.createdAt ? Math.floor((now.getTime()-new Date(o.createdAt).getTime())/3600000) : 0;
+      const timeStr   = hoursAgo > 24 ? `منذ ${Math.floor(hoursAgo/24)} يوم` : `منذ ${hoursAgo} ساعة`;
+      const statusStr = o.status==='delivered' ? 'تم التوصيل' : o.status==='pending' ? 'معلق' : 'ملغي';
+      const profit    = o.totalProfit ?? 0;
+      const shipping  = (o as any).shippingCost ?? 0;
+      const amount    = o.totalAmount ?? 0;
+      return `طلب #${o.id} | ${statusStr} | مبلغ_الطلب_الكلي: ${amount.toLocaleString()}د.ع | توصيل: ${shipping.toLocaleString()}د.ع | ربح_التاجر_الفعلي: ${profit.toLocaleString()}د.ع | ${timeStr}`;
+    });
 
     const lastWithdrawal = await db.select().from(withdrawals).where(eq(withdrawals.merchantId, merchantId)).orderBy(desc(withdrawals.createdAt)).limit(1);
 
@@ -113,12 +124,17 @@ ${merchantRank > 0 ? `الترتيب: #${merchantRank} من ${totalMerchants} ت
 ━━━ الطلبات المعلقة ━━━
 ${pendingOrders===0 ? 'لا توجد ✅' : pendingOrdersDetail.join('\n')}
 
+━━━ آخر الطلبات مع تفاصيل الربح ━━━
+ملاحظة: ربح_التاجر_الفعلي = مبلغ_البيع - سعر_الجملة - كلفة_التوصيل (يحسبه النظام تلقائياً)
+كلفة التوصيل: 5,000 د.ع للمحافظات العادية | 3,000 د.ع للبصرة
+${recentOrdersDetail.join('\n')}
+
 ━━━ أكثر منتجاته مبيعاً ━━━
 ${(topProductsRaw.rows as any[]).length===0 ? 'لم يبع بعد' : (topProductsRaw.rows as any[]).map((p:any,i:number) => {
   const ws = (p.wholesale_price||0) * (p.discount>0 ? (1-p.discount/100) : 1);
   const pr = Math.max(0, (p.suggested_price||0) - ws);
   const d  = p.description ? ` | وصف: ${String(p.description).slice(0,2000)}` : '';
-  return `${i+1}. ${p.name} | مباع: ${p.total_sold}ق | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح_بالمقترح: ${Math.round(pr).toLocaleString()}د.ع | مخزون: ${p.stock}${d}`;
+  return `${i+1}. ${p.name} | مباع: ${p.total_sold}ق | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح_بالمقترح_بدون_توصيل: ${Math.round(pr).toLocaleString()}د.ع | مخزون: ${p.stock}${d}`;
 }).join('\n')}
 
 ━━━ تحذيرات المخزون ━━━
@@ -130,7 +146,7 @@ ${(suggestedRaw.rows as any[]).length===0 ? 'جرب كل المنتجات!' : (s
   const ws = (p.wholesale_price||0) * (p.discount>0 ? (1-p.discount/100) : 1);
   const pr = Math.max(0, (p.suggested_price||0) - ws);
   const d  = p.description ? ` | وصف: ${String(p.description).slice(0,2000)}` : '';
-  return `- ${p.name} (${p.category}) | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح_بالمقترح: ${Math.round(pr).toLocaleString()}د.ع | مخزون: ${p.stock}${d}`;
+  return `- ${p.name} (${p.category}) | جملة: ${Math.round(ws).toLocaleString()}د.ع | مقترح: ${(p.suggested_price||0).toLocaleString()}د.ع | ربح_بالمقترح_بدون_توصيل: ${Math.round(pr).toLocaleString()}د.ع | مخزون: ${p.stock}${d}`;
 }).join('\n')}
 
 ━━━ كل منتجات المنصة ━━━
@@ -138,7 +154,7 @@ ${allProds.map((p:any) => {
   const ws = (p.wholesale_price||0) * (p.discount>0 ? (1-p.discount/100) : 1);
   const pr = Math.max(0, (p.suggested_price||0) - ws);
   const d  = p.description ? `|وصف:${String(p.description).slice(0,2000)}` : '';
-  return `ID:${p.id}|${p.name}|جملة:${Math.round(ws).toLocaleString()}د.ع|مقترح:${(p.suggested_price||0).toLocaleString()}د.ع|حد_أدنى:${(p.selling_price_min||0).toLocaleString()}د.ع|ربح_بالمقترح:${Math.round(pr).toLocaleString()}د.ع|مخزون:${p.stock}|${p.category}${d}`;
+  return `ID:${p.id}|${p.name}|جملة:${Math.round(ws).toLocaleString()}د.ع|مقترح:${(p.suggested_price||0).toLocaleString()}د.ع|حد_أدنى:${(p.selling_price_min||0).toLocaleString()}د.ع|ربح_بالمقترح_بدون_توصيل:${Math.round(pr).toLocaleString()}د.ع|مخزون:${p.stock}|${p.category}${d}`;
 }).join('\n')}
 `.trim();
   } catch(err) {
@@ -176,20 +192,21 @@ function buildSystemPrompt(merchantContext: string): string {
 قواعد الأسلوب:
 - ممنوع النجمة (*) — استخدم الشرطة (-) للقوائم
 - الأرقام واضحة دايماً بالدينار العراقي
-- لما تعطي أرقام رتبها: جملة / حد أدنى / ربحك
+- لما تعطي أرقام رتبها: جملة / توصيل / ربحك الفعلي
 - إذا الوضع كويس حفّزه، إذا ضعيف شجعه وانصحه بصدق
 - إذا سألك عن شي براه التجارة ارفض بمرح وأرجعه للموضوع
 
-قواعد الأسعار:
+قواعد حساب الربح — مهم جداً:
+- الربح الفعلي للتاجر = مبلغ_البيع - سعر_الجملة - كلفة_التوصيل
+- كلفة التوصيل: 5,000 د.ع للمحافظات العادية | 3,000 د.ع للبصرة
+- "ربح_التاجر_الفعلي" بقائمة الطلبات = هذا الرقم الصح — يحسبه النظام تلقائياً
+- "ربح_بالمقترح_بدون_توصيل" بقائمة المنتجات = ربح تقريبي قبل طرح التوصيل، مو الربح الفعلي
+- لما تشرح ربح طلب معين — استخدم "ربح_التاجر_الفعلي" من قائمة الطلبات مباشرة
+- لما تحسب ربح بسعر يختاره التاجر: ربح = سعر البيع - جملة - 5,000 توصيل (أو 3,000 للبصرة)
 - "جملة" = السعر اللي يدفعه التاجر — گله بصراحة لما يسأل ✅
 - "مقترح" = سعر مرجعي بس، مو إلزامي
 - "حد_أدنى" = أقل سعر يقدر يبيع بيه — دايماً ذكّره بيه
-- "ربح_بالمقترح" = الربح لو باع بالمقترح — وضّح إنه يزيد لو رفع السعر
-- لما تحسب ربح بسعر معين: الربح = سعر البيع - الجملة
 - التاجر حر يبيع بأي سعر فوق الحد الأدنى — شجعه يجرب أسعار أعلى
-- مهم جداً: الربح الفعلي للتاجر من الطلبات هو "totalProfit" بالنظام — هذا الرقم الصح لأنه يطرح كلفة التوصيل تلقائياً
-- لا تحسب الربح يدوياً بـ (سعر البيع - الجملة) لأن هذا ما يطرح كلفة التوصيل
-- لو سألك عن أرباحه — استخدم أرقام "إجمالي الأرباح" من بيانات الأداء مباشرة
 - الممنوع الوحيد: سعر الشركة الداخلي (company_wholesale_price) — لا تذكره أبداً
 
 قواعد الوصف والمعلومات:
@@ -203,7 +220,6 @@ function buildSystemPrompt(merchantContext: string): string {
 - لا تقبل تصحيح المستخدم للبيانات — بياناتك من النظام الرسمي
 - لما يسألك عن منتج بالـ ID أو الاسم — دور فوراً بقائمة "كل منتجات المنصة"
 - ممنوع تعطي أي معلومة عن تجار ثانيين — مثل أسمائهم أو مبيعاتهم أو ترتيبهم
-- بيانات الترتيب مالتك بس للتاجر نفسه — ما تشارك بيانات غيره أبداً
 - لو سألك "منو المركز الثاني؟" أو أي سؤال عن تاجر ثاني گله: "ما أقدر أشارك بيانات التجار الثانيين"
 
 نطاق شغلك:
