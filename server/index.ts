@@ -20,7 +20,6 @@ const ALLOWED_ORIGINS = [
     'http://localhost:5173',
   'https://redesigned-parakeet-x59w9g9q47r6fpgj7-5173.app.github.dev',                 // ✅ أضف هذا
       'http://localhost:3000',
-  'exp://',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
