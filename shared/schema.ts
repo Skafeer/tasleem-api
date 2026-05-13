@@ -161,3 +161,19 @@ export const inventoryLog = pgTable('inventory_log', {
   stockAfter: integer('stock_after').notNull(),
   createdAt:  timestamp('created_at').defaultNow(),
 });
+
+// ── OTP Codes ─────────────────────────────────────────────────────
+export const otpCodes = pgTable('otp_codes', {
+  id:        serial('id').primaryKey(),
+  phone:     text('phone').notNull(),
+  // الكود مشفّر بـ scrypt — لا يُخزن نص عادي
+  codeHash:  text('code_hash').notNull(),
+  // نوع الـ OTP: register | forgot_password | change_password
+  type:      text('type').notNull().default('register'),
+  expiresAt: timestamp('expires_at').notNull(),
+  attempts:  integer('attempts').notNull().default(0),
+  used:      boolean('used').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export type OtpCode = typeof otpCodes.$inferSelect;

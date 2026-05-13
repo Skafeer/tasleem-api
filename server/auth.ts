@@ -5,12 +5,115 @@ import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
+import { db } from "./db";
+import { otpCodes } from "../shared/schema";
+import { eq, and, gt } from "drizzle-orm";
 
 const scryptAsync = promisify(scrypt);
 if (!process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET environment variable is required");
 }
 const JWT_SECRET = process.env.SESSION_SECRET;
+
+// ── WhatsApp OTP Sender ─────────────────────────────────────────
+const WA_TOKEN    = process.env.WHATSAPP_TOKEN    || '';
+const WA_PHONE_ID = process.env.WHATSAPP_PHONE_ID || '';
+
+async function sendOtpWhatsApp(phone: string, code: string): Promise<boolean> {
+  try {
+    // تحويل رقم العراقي 07xxxxxxxx → 9647xxxxxxxx
+    const intlPhone = phone.startsWith('0')
+      ? '964' + phone.slice(1)
+      : phone;
+
+    const res = await fetch(
+      `https://graph.facebook.com/v19.0/${WA_PHONE_ID}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${WA_TOKEN}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: intlPhone,
+          type: 'template',
+          template: {
+            name: 'authentication_international_ar',
+            language: { code: 'ar' },
+            components: [{
+              type: 'body',
+              parameters: [{ type: 'text', text: code }],
+            }, {
+              type: 'button',
+              sub_type: 'url',
+              index: '0',
+              parameters: [{ type: 'text', text: code }],
+            }],
+          },
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      // fallback: رسالة نصية عادية
+      const fallback = await fetch(
+        `https://graph.facebook.com/v19.0/${WA_PHONE_ID}/messages`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${WA_TOKEN}`,
+            'Content-Type':  'application/json',
+          },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: intlPhone,
+            type: 'text',
+            text: {
+              body: `🔐 رمز التحقق الخاص بك في تسليم:\n\n*${code}*\n\nصالح لمدة 5 دقائق.\nلا تشاركه مع أحد.`
+            },
+          }),
+        }
+      );
+      return fallback.ok;
+    }
+    return true;
+  } catch (e) {
+    console.error('WhatsApp OTP error:', e);
+    return false;
+  }
+}
+
+// ── OTP Helpers ──────────────────────────────────────────────────
+async function hashOtp(code: string): Promise<string> {
+  const salt = randomBytes(8).toString('hex');
+  const buf  = (await scryptAsync(code, salt, 32)) as Buffer;
+  return `${buf.toString('hex')}.${salt}`;
+}
+
+async function verifyOtp(code: string, hash: string): Promise<boolean> {
+  const [hashed, salt] = hash.split('.');
+  const buf = (await scryptAsync(code, salt, 32)) as Buffer;
+  return timingSafeEqual(Buffer.from(hashed, 'hex'), buf);
+}
+
+function generateOtp(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// Rate limit لإرسال OTP: 3 طلبات كحد أقصى في الساعة لنفس الرقم
+const otpRateMap = new Map<string, { count: number; resetAt: number }>();
+function checkOtpRate(phone: string): boolean {
+  const now   = Date.now();
+  const entry = otpRateMap.get(phone);
+  if (!entry || now > entry.resetAt) {
+    otpRateMap.set(phone, { count: 1, resetAt: now + 3_600_000 });
+    return true;
+  }
+  if (entry.count >= 3) return false;
+  entry.count++;
+  return true;
+}
 
 // ── Rate Limiter عام (IP) ──
 const authRateMap = new Map<string, { count: number; resetAt: number }>();
@@ -99,31 +202,234 @@ export function requireAuth(req: any, res: any, next: any) {
 }
 
 export function setupAuth(app: Express) {
-  // Register
+
+  // ── 1. إرسال OTP للتسجيل ─────────────────────────────────────
+  app.post("/api/auth/send-otp", authRateLimit, async (req, res) => {
+    try {
+      const { phone, type = 'register' } = req.body;
+
+      if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
+        return res.status(400).json({ message: 'رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم' });
+
+      // التحقق من rate limit
+      if (!checkOtpRate(phone))
+        return res.status(429).json({ message: 'تجاوزت الحد المسموح، حاول بعد ساعة' });
+
+      // لو تسجيل — تأكد الرقم غير مسجل
+      if (type === 'register') {
+        const existing = await storage.getUserByPhone(phone.trim());
+        if (existing) return res.status(400).json({ message: 'رقم الهاتف مسجل مسبقاً' });
+      }
+
+      // لو نسيان كلمة المرور — تأكد الرقم موجود
+      if (type === 'forgot_password') {
+        const user = await storage.getUserByPhone(phone.trim());
+        if (!user) return res.status(404).json({ message: 'هذا الرقم غير مسجل في تسليم' });
+      }
+
+      const code      = generateOtp();
+      const codeHash  = await hashOtp(code);
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 دقائق
+
+      // احذف الكودات القديمة لنفس الرقم ونفس النوع
+      await db.delete(otpCodes)
+        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, type)));
+
+      // أنشئ كود جديد
+      await db.insert(otpCodes).values({ phone, codeHash, type, expiresAt, attempts: 0, used: false });
+
+      // أرسل عبر واتساب
+      const sent = await sendOtpWhatsApp(phone, code);
+      if (!sent) return res.status(500).json({ message: 'فشل إرسال رمز التحقق، حاول مرة أخرى' });
+
+      res.json({ message: 'تم إرسال رمز التحقق على واتساب' });
+    } catch (e) {
+      console.error('send-otp error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ── 2. إعادة إرسال OTP ───────────────────────────────────────
+  app.post("/api/auth/resend-otp", authRateLimit, async (req, res) => {
+    try {
+      const { phone, type = 'register' } = req.body;
+
+      if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
+        return res.status(400).json({ message: 'رقم هاتف غير صحيح' });
+
+      if (!checkOtpRate(phone))
+        return res.status(429).json({ message: 'تجاوزت الحد المسموح، حاول بعد ساعة' });
+
+      const code      = generateOtp();
+      const codeHash  = await hashOtp(code);
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+      await db.delete(otpCodes)
+        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, type)));
+
+      await db.insert(otpCodes).values({ phone, codeHash, type, expiresAt, attempts: 0, used: false });
+
+      const sent = await sendOtpWhatsApp(phone, code);
+      if (!sent) return res.status(500).json({ message: 'فشل إرسال رمز التحقق' });
+
+      res.json({ message: 'تم إعادة إرسال رمز التحقق' });
+    } catch (e) {
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ── 3. التسجيل مع التحقق من OTP ─────────────────────────────
   app.post("/api/auth/register", authRateLimit, async (req, res) => {
     try {
-      const { phone, password, storeName, address } = req.body;
+      const { phone, password, storeName, address, otpCode } = req.body;
 
-      // ✅ Validation
       if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
         return res.status(400).json({ message: 'رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم' });
       if (!password || password.trim().length < 6)
         return res.status(400).json({ message: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
-      if (!storeName || storeName.trim().length < 2 || storeName.trim().length > 100)
-        return res.status(400).json({ message: 'اسم المتجر يجب أن يكون بين 2 و 100 حرف' });
+      if (!storeName || storeName.trim().length < 2)
+        return res.status(400).json({ message: 'اسم المتجر مطلوب' });
+      if (!otpCode)
+        return res.status(400).json({ message: 'رمز التحقق مطلوب' });
 
+      // ✅ تحقق من الـ OTP
+      const now  = new Date();
+      const otpRows = await db.select().from(otpCodes)
+        .where(and(
+          eq(otpCodes.phone, phone),
+          eq(otpCodes.type, 'register'),
+          eq(otpCodes.used, false),
+          gt(otpCodes.expiresAt, now)
+        ))
+        .limit(1);
+
+      if (!otpRows.length)
+        return res.status(400).json({ message: 'رمز التحقق منتهي أو غير موجود، أعد الإرسال' });
+
+      const otp = otpRows[0];
+
+      // حد المحاولات
+      if (otp.attempts >= 3) {
+        await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
+        return res.status(400).json({ message: 'تجاوزت عدد المحاولات، أعد إرسال الرمز' });
+      }
+
+      const valid = await verifyOtp(otpCode, otp.codeHash);
+      if (!valid) {
+        await db.update(otpCodes)
+          .set({ attempts: otp.attempts + 1 })
+          .where(eq(otpCodes.id, otp.id));
+        const remaining = 3 - (otp.attempts + 1);
+        return res.status(400).json({
+          message: remaining > 0
+            ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولة`
+            : 'رمز التحقق غير صحيح'
+        });
+      }
+
+      // الرمز صح — سجّله كمستخدم
       const existing = await storage.getUserByPhone(phone.trim());
-      if (existing) return res.status(400).json({ message: "رقم الهاتف مسجل مسبقاً" });
+      if (existing) return res.status(400).json({ message: 'رقم الهاتف مسجل مسبقاً' });
+
       const merchantId = `TSL-${Date.now().toString(36).toUpperCase()}`;
       const user = await storage.createUser({
-        phone, storeName, address: address || "",
+        phone, storeName, address: address || '',
         password: await hashPassword(password),
-        role: "merchant", merchantId, balance: 0, pendingBalance: 0,
+        role: 'merchant', merchantId, balance: 0, pendingBalance: 0,
       });
+
+      // احذف الـ OTP بعد الاستخدام
+      await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
+
       const { password: _, ...u } = user;
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
       res.status(201).json({ ...u, token });
-    } catch (err: any) {
+    } catch (e: any) {
+      console.error('register error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ── 4. نسيان كلمة المرور — إرسال OTP ────────────────────────
+  // (يستخدم /api/auth/send-otp مع type: 'forgot_password')
+
+  // ── 5. إعادة تعيين كلمة المرور ──────────────────────────────
+  app.post("/api/auth/reset-password", authRateLimit, async (req, res) => {
+    try {
+      const { phone, otpCode, newPassword } = req.body;
+
+      if (!phone || !otpCode || !newPassword)
+        return res.status(400).json({ message: 'جميع الحقول مطلوبة' });
+      if (newPassword.length < 6)
+        return res.status(400).json({ message: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+
+      const now = new Date();
+      const otpRows = await db.select().from(otpCodes)
+        .where(and(
+          eq(otpCodes.phone, phone),
+          eq(otpCodes.type, 'forgot_password'),
+          eq(otpCodes.used, false),
+          gt(otpCodes.expiresAt, now)
+        ))
+        .limit(1);
+
+      if (!otpRows.length)
+        return res.status(400).json({ message: 'رمز التحقق منتهي أو غير موجود' });
+
+      const otp = otpRows[0];
+
+      if (otp.attempts >= 3) {
+        await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
+        return res.status(400).json({ message: 'تجاوزت عدد المحاولات، أعد إرسال الرمز' });
+      }
+
+      const valid = await verifyOtp(otpCode, otp.codeHash);
+      if (!valid) {
+        await db.update(otpCodes)
+          .set({ attempts: otp.attempts + 1 })
+          .where(eq(otpCodes.id, otp.id));
+        const remaining = 3 - (otp.attempts + 1);
+        return res.status(400).json({
+          message: remaining > 0
+            ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولة`
+            : 'رمز التحقق غير صحيح'
+        });
+      }
+
+      const user = await storage.getUserByPhone(phone);
+      if (!user) return res.status(404).json({ message: 'المستخدم غير موجود' });
+
+      await storage.updateUser(user.id, { password: await hashPassword(newPassword) });
+      await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
+      clearLoginFail(phone);
+
+      res.json({ message: 'تم تغيير كلمة المرور بنجاح' });
+    } catch (e) {
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ── 6. تغيير كلمة المرور من الإعدادات (مع OTP) ──────────────
+  app.post("/api/auth/request-change-password", requireAuth, async (req: any, res) => {
+    try {
+      const phone = req.user.phone;
+      if (!checkOtpRate(phone))
+        return res.status(429).json({ message: 'تجاوزت الحد المسموح، حاول بعد ساعة' });
+
+      const code      = generateOtp();
+      const codeHash  = await hashOtp(code);
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+      await db.delete(otpCodes)
+        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, 'change_password')));
+
+      await db.insert(otpCodes).values({ phone, codeHash, type: 'change_password', expiresAt, attempts: 0, used: false });
+
+      const sent = await sendOtpWhatsApp(phone, code);
+      if (!sent) return res.status(500).json({ message: 'فشل إرسال رمز التحقق' });
+
+      res.json({ message: 'تم إرسال رمز التحقق على واتساب' });
+    } catch (e) {
       res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
