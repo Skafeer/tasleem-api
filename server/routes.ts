@@ -527,7 +527,7 @@ merchantId: req.user.id,
 
 customerName, customerPhone, province, address,
 
-notes: notes || "", status: "pending",
+notes: notes || "", status: "processing", // الحالة الافتراضية "قيد المعالجة"
 
 totalAmount: finalAmount, shippingCost, totalProfit, companyProfit,
 
@@ -571,8 +571,8 @@ await Promise.all(enrichedItems.map(async (item: any) => {
 }));
 
 
-// تحديث رصيد التاجر
-
+// تحديث رصيد التاجر (الأرباح تضاف فقط إذا الطلب بحالة مربحة)
+// ✅ بما أن الحالة الافتراضية "processing" وهي من الحالات المربحة، نضيف الأرباح
 const freshUser = await storage.getUser(req.user.id);
 
 if (freshUser) {
@@ -580,6 +580,8 @@ if (freshUser) {
 await storage.updateUser(req.user.id, {
 
 pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
+
+balance: (freshUser.balance || 0) + totalProfit, // ✅ إضافة الأرباح للرصيد فوراً
 
 });
 
@@ -607,125 +609,152 @@ res.status(201).json(order);
 });
 
 
+// ── تحديث حالة الطلب (مع حل مشكلة الأرباح) ──
+
 app.patch("/api/orders/:id/status", requireAuth, async (req: any, res) => {
 if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
 try {
-  const VALID_STATUSES = ['pending','processing','preparing','shipping','delivered','cancelled','returned','postponed'];
+  // ✅ الحالات المسموح بها بعد التعديل
+  const VALID_STATUSES = ['processing', 'shipping', 'delivered', 'cancelled', 'returned', 'postponed'];
   if (!VALID_STATUSES.includes(req.body.status))
     return res.status(400).json({ message: 'حالة غير صحيحة' });
 
   const order = await storage.getOrder(Number(req.params.id));
   if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
 
-  const updated = await storage.updateOrder(Number(req.params.id), { status: req.body.status });
-
-if (req.body.status === "delivered" && order.status !== "delivered") {
-  // ✅ Fix: Atomic update لمنع race condition
-  await db.execute(
-    sql`UPDATE users
-        SET balance = balance + ${order.totalProfit},
-            pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
-        WHERE id = ${order.merchantId}`
-  );
-}
-
-// ✅ منطق المخزون الثنائي الاتجاه
-// الحالات "النهائية" = المخزون رجع للمستودع
-const TERMINAL_STATUSES = ['cancelled', 'returned'];
-const wasTerminal = TERMINAL_STATUSES.includes(order.status);
-const isTerminal  = TERMINAL_STATUSES.includes(req.body.status);
-
-// حالة 1: انتقال إلى terminal (cancelled/returned) من حالة نشطة → استعد المخزون
-const shouldRestoreStock = isTerminal && !wasTerminal;
-
-// حالة 2: انتقال من terminal إلى حالة نشطة → اخصم المخزون مجدداً
-const shouldDeductStock  = !isTerminal && wasTerminal;
-
-if (shouldRestoreStock || shouldDeductStock) {
-  const fullOrder = await storage.getOrder(order.id);
-  if (fullOrder?.items) {
-    await Promise.all(fullOrder.items.map(async (item: any) => {
-      const product = await storage.getProduct(item.productId);
-      if (!product) return;
-
-      const change   = shouldRestoreStock ? item.quantity : -item.quantity;
-      const newStock = Math.max(0, product.stock + change);
-      await storage.updateProduct(item.productId, { stock: newStock });
-
-      // سجّل في inventory_log
-      await db.insert(inventoryLog).values({
-        productId: item.productId,
-        adminId:   req.user.id,
-        change,
-        reason: shouldRestoreStock
-          ? (req.body.status === 'cancelled' ? 'cancel' : 'returned')
-          : 'order',
-        note: shouldRestoreStock
-          ? `طلب #${order.id} — ${req.body.status === 'cancelled' ? 'ملغي' : 'مرتجع'}`
-          : `طلب #${order.id} — إعادة تفعيل من ${order.status}`,
-        stockAfter: newStock,
-      }).catch(() => {});
-
-      // إشعار للأدمن لو نفد المخزون بعد الخصم
-      if (shouldDeductStock && newStock === 0) {
-        try {
-          const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
-          const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
-          const { sendPushNotification } = await import('./notifications');
-          await sendPushNotification({
-            userIds: adminIds,
-            title: '⚠️ نفد المخزون',
-            body: `المنتج "${product.name}" نفد المخزون بالكامل`,
-            data: { type: 'stock_out', productId: String(item.productId) },
-          });
-        } catch (_) {}
-      }
-    }));
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // ✅ ✅ ✅ حل مشكلة الأرباح: حذف أو إضافة الأرباح حسب الحالة
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  const PROFIT_STATUSES = ['processing', 'shipping', 'delivered', 'postponed']; // الحالات اللي تحسب فيها الأرباح
+  const LOSS_STATUSES = ['cancelled', 'returned']; // الحالات اللي لا تحسب فيها الأرباح (تم الإلغاء، تم الرفض)
+  
+  const oldStatus = order.status;
+  const newStatus = req.body.status;
+  
+  // الحالة القديمة كانت من ضمن الحالات المربحة؟
+  const oldWasProfitable = PROFIT_STATUSES.includes(oldStatus);
+  // الحالة الجديدة من ضمن الحالات المربحة؟
+  const newIsProfitable = PROFIT_STATUSES.includes(newStatus);
+  
+  // حالة 1: كان مربح و صار غير مربح (cancelled/returned) → احذف الأرباح من التاجر
+  if (oldWasProfitable && LOSS_STATUSES.includes(newStatus)) {
+    await db.execute(
+      sql`UPDATE users
+          SET balance = GREATEST(0, balance - ${order.totalProfit}),
+              pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
+          WHERE id = ${order.merchantId}`
+    );
+    console.log(`💰 تم خصم أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
   }
+  
+  // حالة 2: كان غير مربح و صار مربح (من cancelled/returned إلى processing/shipping/delivered/postponed) → أضف الأرباح للتاجر
+  else if (LOSS_STATUSES.includes(oldStatus) && newIsProfitable) {
+    await db.execute(
+      sql`UPDATE users
+          SET balance = balance + ${order.totalProfit},
+              pending_balance = pending_balance + ${order.totalProfit}
+          WHERE id = ${order.merchantId}`
+    );
+    console.log(`💰 تم إضافة أرباح الطلب #${order.id} (${order.totalProfit} د.ع) إلى حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
+  }
+  
+  // حالة 3: delivered ←→ processing/shipping/postponed (تبقى مربحة) → لا تغيير في الأرباح
+  // حالة 4: cancelled ←→ returned (تبقى غير مربحة) → لا تغيير في الأرباح
+  
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // تحديث حالة الطلب في قاعدة البيانات
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  const updated = await storage.updateOrder(Number(req.params.id), { status: newStatus });
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // ✅ منطق المخزون
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  // الحالات "النهائية" = المخزون رجع للمستودع (تم الإلغاء + تم الرفض)
+  const TERMINAL_STATUSES = ['cancelled', 'returned'];
+  const wasTerminal = TERMINAL_STATUSES.includes(oldStatus);
+  const isTerminal  = TERMINAL_STATUSES.includes(newStatus);
+
+  // حالة 1: انتقال إلى terminal (cancelled/returned) من حالة نشطة → استعد المخزون
+  const shouldRestoreStock = isTerminal && !wasTerminal;
+
+  // حالة 2: انتقال من terminal إلى حالة نشطة → اخصم المخزون مجدداً
+  const shouldDeductStock  = !isTerminal && wasTerminal;
+
+  if (shouldRestoreStock || shouldDeductStock) {
+    const fullOrder = await storage.getOrder(order.id);
+    if (fullOrder?.items) {
+      await Promise.all(fullOrder.items.map(async (item: any) => {
+        const product = await storage.getProduct(item.productId);
+        if (!product) return;
+
+        const change   = shouldRestoreStock ? item.quantity : -item.quantity;
+        const newStock = Math.max(0, product.stock + change);
+        await storage.updateProduct(item.productId, { stock: newStock });
+
+        // سجّل في inventory_log
+        await db.insert(inventoryLog).values({
+          productId: item.productId,
+          adminId:   req.user.id,
+          change,
+          reason: shouldRestoreStock
+            ? (newStatus === 'cancelled' ? 'cancel' : 'returned')
+            : 'order',
+          note: shouldRestoreStock
+            ? `طلب #${order.id} — ${newStatus === 'cancelled' ? 'ملغي' : 'مرتجع'}`
+            : `طلب #${order.id} — إعادة تفعيل من ${oldStatus}`,
+          stockAfter: newStock,
+        }).catch(() => {});
+
+        // إشعار للأدمن لو نفد المخزون بعد الخصم
+        if (shouldDeductStock && newStock === 0) {
+          try {
+            const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+            const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+            const { sendPushNotification } = await import('./notifications');
+            await sendPushNotification({
+              userIds: adminIds,
+              title: '⚠️ نفد المخزون',
+              body: `المنتج "${product.name}" نفد المخزون بالكامل`,
+              data: { type: 'stock_out', productId: String(item.productId) },
+            });
+          } catch (_) {}
+        }
+      }));
+    }
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // ✅ إرسال إشعار للتاجر
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  const STATUS_LABELS: Record<string, string> = {
+    processing: 'قيد المعالجة 🔄',
+    shipping: 'قيد التوصيل 🚴',
+    delivered: 'تم التوصيل ✅',
+    cancelled: 'تم الإلغاء ❌',
+    returned: 'تم الرفض ⛔',
+    postponed: 'مؤجل ⏸',
+  };
+
+  try {
+    const { sendPushNotification } = await import('./notifications');
+    await sendPushNotification({
+      userIds: [order.merchantId],
+      title: 'تحديث حالة الطلب',
+      body: `طلبك رقم #${order.id} أصبح: ${STATUS_LABELS[newStatus] || newStatus}`,
+      data: { type: 'order_status', orderId: order.id, status: newStatus },
+    });
+  } catch (_) {}
+
+  res.json(updated);
+
+} catch (e: any) { 
+  console.error("Error updating order status:", e);
+  res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
 }
-
-const STATUS_LABELS: Record<string, string> = {
-
-pending: 'قيد الانتظار ⏳',
-
-processing: 'قيد المعالجة 🔄',
-
-preparing: 'قيد التجهيز 📦',
-
-shipping: 'قيد التوصيل 🚴',
-
-delivered: 'تم التوصيل ✅',
-
-cancelled: 'ملغي ❌',
-
-returned: 'راجع 🔙',
-
-postponed: 'مؤجل ⏸',
-
-};
-
-try {
-
-const { sendPushNotification } = await import('./notifications');
-
-await sendPushNotification({
-
-userIds: [order.merchantId],
-
-title: 'تحديث حالة الطلب',
-
-body: `طلبك رقم #${order.id} أصبح: ${STATUS_LABELS[req.body.status] || req.body.status}`,
-
-data: { type: 'order_status', orderId: order.id, status: req.body.status },
-
-});
-
-} catch (_) {}
-
-res.json(updated);
-
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
-
 });
 
 
