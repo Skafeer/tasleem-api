@@ -571,14 +571,14 @@ await Promise.all(enrichedItems.map(async (item: any) => {
 }));
 
 
-// ✅ تحديث رصيد التاجر - الأرباح تضاف فقط إلى pending_balance وليس balance
-// لأن الطلب لا يزال قيد المعالجة، والأرباح الحقيقية تضاف فقط عند التسليم (delivered)
+// ✅ تحديث رصيد التاجر - الأرباح تضاف إلى pending_balance فقط
+// لأن الطلب لا يزال قيد المعالجة
 const freshUser = await storage.getUser(req.user.id);
 
 if (freshUser) {
   await storage.updateUser(req.user.id, {
     pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
-    // ❌ لا نضيف إلى balance هنا - balance يضاف فقط عند delivered
+    // balance لا يتغير هنا
   });
 }
 
@@ -604,12 +604,12 @@ res.status(201).json(order);
 });
 
 
-// ── تحديث حالة الطلب (مع حل مشكلة الأرباح) ──
+// ── تحديث حالة الطلب (مع المنطق الصحيح للأرباح) ──
 
 app.patch("/api/orders/:id/status", requireAuth, async (req: any, res) => {
 if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
 try {
-  // ✅ الحالات المسموح بها بعد التعديل
+  // ✅ الحالات المسموح بها
   const VALID_STATUSES = ['processing', 'shipping', 'delivered', 'cancelled', 'returned', 'postponed'];
   if (!VALID_STATUSES.includes(req.body.status))
     return res.status(400).json({ message: 'حالة غير صحيحة' });
@@ -618,67 +618,92 @@ try {
   if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // ✅ ✅ ✅ حل مشكلة الأرباح: حذف أو إضافة الأرباح حسب الحالة
+  // ✅ المنطق الصحيح للأرباح
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   
-  const PROFIT_STATUSES = ['processing', 'shipping', 'delivered', 'postponed']; // الحالات اللي تحسب فيها الأرباح
-  const LOSS_STATUSES = ['cancelled', 'returned']; // الحالات اللي لا تحسب فيها الأرباح (تم الإلغاء، تم الرفض)
+  // الحالات التي تكون فيها الأرباح معلقة (في pending_balance)
+  const PENDING_STATUSES = ['processing', 'shipping', 'postponed'];
+  // الحالات التي تكون فيها الأرباح محققة (في balance)
+  const BALANCE_STATUSES = ['delivered'];
+  // الحالات التي لا توجد فيها أرباح
+  const LOSS_STATUSES = ['cancelled', 'returned'];
   
   const oldStatus = order.status;
   const newStatus = req.body.status;
   
-  // الحالة القديمة كانت من ضمن الحالات المربحة؟
-  const oldWasProfitable = PROFIT_STATUSES.includes(oldStatus);
-  // الحالة الجديدة من ضمن الحالات المربحة؟
-  const newIsProfitable = PROFIT_STATUSES.includes(newStatus);
+  const oldWasPending = PENDING_STATUSES.includes(oldStatus);
+  const oldWasBalance = BALANCE_STATUSES.includes(oldStatus);
+  const oldWasLoss = LOSS_STATUSES.includes(oldStatus);
   
-  // حالة 1: كان مربح و صار غير مربح (cancelled/returned) → احذف الأرباح من pending_balance فقط
-  // ملاحظة: balance لا يتغير هنا لأنه لم يضاف أصلاً عند إنشاء الطلب
-  if (oldWasProfitable && LOSS_STATUSES.includes(newStatus)) {
+  const newIsPending = PENDING_STATUSES.includes(newStatus);
+  const newIsBalance = BALANCE_STATUSES.includes(newStatus);
+  const newIsLoss = LOSS_STATUSES.includes(newStatus);
+  
+  // ──────────────────────────────────────────────────────────────
+  
+  // حالة 1: من معلقة إلى خسارة (processing/shipping/postponed → cancelled/returned)
+  if (oldWasPending && newIsLoss) {
     await db.execute(
       sql`UPDATE users
           SET pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
           WHERE id = ${order.merchantId}`
     );
-    console.log(`💰 تم خصم الأرباح المعلقة للطلب #${order.id} (${order.totalProfit} د.ع) من حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
+    console.log(`💰 تم خصم الأرباح المعلقة للطلب #${order.id} (${order.totalProfit} د.ع)`);
   }
   
-  // حالة 2: كان غير مربح و صار مربح (من cancelled/returned إلى processing/shipping/delivered/postponed) → أضف الأرباح إلى pending_balance
-  else if (LOSS_STATUSES.includes(oldStatus) && newIsProfitable) {
+  // حالة 2: من خسارة إلى معلقة (cancelled/returned → processing/shipping/postponed)
+  else if (oldWasLoss && newIsPending) {
     await db.execute(
       sql`UPDATE users
           SET pending_balance = pending_balance + ${order.totalProfit}
           WHERE id = ${order.merchantId}`
     );
-    console.log(`💰 تم إضافة الأرباح المعلقة للطلب #${order.id} (${order.totalProfit} د.ع) إلى حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
+    console.log(`💰 تم إضافة الأرباح المعلقة للطلب #${order.id} (${order.totalProfit} د.ع)`);
   }
   
-  // حالة 3: delivered ←→ processing/shipping/postponed (تبقى مربحة) → لا تغيير في الأرباح
-  
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // معالجة حالة delivered بشكل منفصل (نقل من pending_balance إلى balance)
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  
-  if (newStatus === "delivered" && oldStatus !== "delivered") {
+  // حالة 3: من معلقة إلى محققة (processing/shipping/postponed → delivered)
+  else if (oldWasPending && newIsBalance) {
     await db.execute(
       sql`UPDATE users
-          SET balance = balance + ${order.totalProfit},
-              pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
+          SET pending_balance = GREATEST(0, pending_balance - ${order.totalProfit}),
+              balance = balance + ${order.totalProfit}
           WHERE id = ${order.merchantId}`
     );
-    console.log(`💰 تم تحويل أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من المعلقة إلى الرصيد الفعلي للتاجر ${order.merchantId}`);
+    console.log(`💰 تم تحويل أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من المعلقة إلى المحققة`);
   }
   
-  // إذا تم تغيير الحالة من delivered إلى حالة أخرى (مثلاً postponed)
-  else if (oldStatus === "delivered" && newStatus !== "delivered") {
+  // حالة 4: من محققة إلى معلقة (delivered → processing/shipping/postponed)
+  else if (oldWasBalance && newIsPending) {
     await db.execute(
       sql`UPDATE users
           SET balance = GREATEST(0, balance - ${order.totalProfit}),
               pending_balance = pending_balance + ${order.totalProfit}
           WHERE id = ${order.merchantId}`
     );
-    console.log(`💰 تم إرجاع أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من الرصيد الفعلي إلى المعلقة بسبب تغيير الحالة من delivered إلى ${newStatus}`);
+    console.log(`💰 تم إرجاع أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من المحققة إلى المعلقة`);
   }
+  
+  // حالة 5: من محققة إلى خسارة (delivered → cancelled/returned)
+  else if (oldWasBalance && newIsLoss) {
+    await db.execute(
+      sql`UPDATE users
+          SET balance = GREATEST(0, balance - ${order.totalProfit})
+          WHERE id = ${order.merchantId}`
+    );
+    console.log(`💰 تم خصم أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من الرصيد المحقق`);
+  }
+  
+  // حالة 6: من خسارة إلى محققة (cancelled/returned → delivered) - نادر
+  else if (oldWasLoss && newIsBalance) {
+    await db.execute(
+      sql`UPDATE users
+          SET balance = balance + ${order.totalProfit}
+          WHERE id = ${order.merchantId}`
+    );
+    console.log(`💰 تم إضافة أرباح الطلب #${order.id} (${order.totalProfit} د.ع) إلى الرصيد المحقق`);
+  }
+  
+  // الحالات الأخرى (معلقة→معلقة، محققة→محققة، خسارة→خسارة) لا تغيير
   
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // تحديث حالة الطلب في قاعدة البيانات
@@ -690,15 +715,12 @@ try {
   // ✅ منطق المخزون
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   
-  // الحالات "النهائية" = المخزون رجع للمستودع (تم الإلغاء + تم الرفض)
+  // الحالات التي يرجع فيها المخزون للمستودع
   const TERMINAL_STATUSES = ['cancelled', 'returned'];
   const wasTerminal = TERMINAL_STATUSES.includes(oldStatus);
   const isTerminal  = TERMINAL_STATUSES.includes(newStatus);
 
-  // حالة 1: انتقال إلى terminal (cancelled/returned) من حالة نشطة → استعد المخزون
   const shouldRestoreStock = isTerminal && !wasTerminal;
-
-  // حالة 2: انتقال من terminal إلى حالة نشطة → اخصم المخزون مجدداً
   const shouldDeductStock  = !isTerminal && wasTerminal;
 
   if (shouldRestoreStock || shouldDeductStock) {
@@ -712,7 +734,6 @@ try {
         const newStock = Math.max(0, product.stock + change);
         await storage.updateProduct(item.productId, { stock: newStock });
 
-        // سجّل في inventory_log
         await db.insert(inventoryLog).values({
           productId: item.productId,
           adminId:   req.user.id,
@@ -726,7 +747,6 @@ try {
           stockAfter: newStock,
         }).catch(() => {});
 
-        // إشعار للأدمن لو نفد المخزون بعد الخصم
         if (shouldDeductStock && newStock === 0) {
           try {
             const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
@@ -898,7 +918,6 @@ try {
   if (!validateAmount(amt))
     return res.status(400).json({ message: 'مبلغ غير صحيح' });
 
-  // ✅ FIX: Atomic balance deduction - prevents race condition
   const updateResult = await db.execute(
     sql`UPDATE users SET balance = balance - ${amt} WHERE id = ${req.user.id} AND balance >= ${amt} RETURNING balance`
   );
@@ -986,8 +1005,6 @@ app.patch("/api/auth/profile", requireAuth, async (req: any, res) => {
 
 try {
 
-// ✅ فقط الحقول المسموح للتاجر تعديلها
-
 const { storeName, phone, address, password } = req.body;
 
 const updateData: any = {};
@@ -1023,8 +1040,6 @@ const bcrypt = await import('bcryptjs');
 updateData.password = await bcrypt.hash(password, 10);
 
 }
-
-// ❌ balance و role و merchantId محمية — التاجر ما يقدر يعدلها
 
 const updated = await storage.updateUser(req.user.id, updateData);
 
@@ -1267,9 +1282,6 @@ res.json({ success: true });
 
 
 
-// ── push-tokens-debug removed for security ──
-
-
 // ── Notifications Routes ──
 
 
@@ -1292,7 +1304,6 @@ res.json({ success: true });
 
 app.get('/api/notifications', requireAuth, async (req: any, res) => {
 try {
-  // ✅ FIX: الأدمن يشوف البرودكاست فقط — التاجر يشوف إشعاراته + البرودكاست
   const isAdmin = req.user.role === 'admin';
   const result = isAdmin
     ? await db.execute(sql`SELECT * FROM notifications WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 50`)
@@ -1343,8 +1354,6 @@ res.json({ success: true });
 // ══════════════════════════════════════════
 
 
-// جلب كل الأدمنز (superAdmin فقط)
-
 app.get('/api/admin/admins', requireAuth, async (req: any, res) => {
 
 if (!req.user.is_super_admin && !req.user.isSuperAdmin) return res.status(403).json({ message: 'غير مصرح - سوبر أدمن فقط' });
@@ -1359,10 +1368,6 @@ res.json(result.rows);
 
 });
 
-
-// إضافة أدمن جديد (superAdmin فقط)
-
-// ترقية تاجر موجود لأدمن
 
 app.post('/api/admin/admins', requireAuth, async (req: any, res) => {
 
@@ -1385,8 +1390,6 @@ res.json({ success: true });
 });
 
 
-// تحويل أدمن لتاجر
-
 app.post('/api/admin/admins/:id/demote', requireAuth, async (req: any, res) => {
 
 if (!req.user.is_super_admin && !req.user.isSuperAdmin) return res.status(403).json({ message: 'غير مصرح - سوبر أدمن فقط' });
@@ -1405,8 +1408,6 @@ res.json({ success: true });
 
 });
 
-
-// تعديل صلاحيات أدمن (superAdmin فقط)
 
 app.patch('/api/admin/admins/:id', requireAuth, async (req: any, res) => {
 
@@ -1428,8 +1429,6 @@ res.json({ success: true });
 
 });
 
-
-// حذف أدمن (superAdmin فقط)
 
 app.delete('/api/admin/admins/:id', requireAuth, async (req: any, res) => {
 
@@ -1504,8 +1503,6 @@ res.json({ success: true });
 // ══════════════════════════════════════════
 
 
-// التاجر يجلب محادثته
-
 app.get('/api/support/messages', requireAuth, async (req: any, res) => {
 
 try {
@@ -1517,8 +1514,6 @@ SELECT * FROM support_messages WHERE user_id = ${req.user.id}
 ORDER BY created_at ASC
 
 `);
-
-// تحديث الرسائل كمقروءة
 
 await db.execute(sql`
 
@@ -1535,13 +1530,9 @@ res.json(result.rows);
 });
 
 
-// التاجر يرسل رسالة
-
 app.post('/api/support/messages', requireAuth, async (req: any, res) => {
 
 try {
-
-// التحقق من الحظر
 
 const userResult = await db.execute(sql`SELECT support_blocked FROM users WHERE id = ${req.user.id}`);
 
@@ -1554,8 +1545,6 @@ const { message, imageUrl } = req.body;
 
 if (!message?.trim() && !imageUrl) return res.status(400).json({ message: 'الرسالة فارغة' });
 
-
-// فلترة الكلمات المسيئة
 
 const BAD_WORDS = ['كلب', 'حمار', 'غبي', 'احمق', 'خنزير', 'عاهرة', 'شرموطة', 'منيوك', 'ابن الكلب'];
 
@@ -1583,8 +1572,6 @@ res.json({ success: true });
 });
 
 
-// الأدمن يجلب كل المحادثات
-
 app.get('/api/admin/support', requireAuth, async (req: any, res) => {
 
 if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
@@ -1602,8 +1589,6 @@ JOIN users u ON u.id = sm.user_id
 ORDER BY sm.created_at ASC
 
 `);
-
-// تجميع المحادثات حسب المستخدم
 
 const map: Record<number, any> = {};
 
@@ -1637,8 +1622,6 @@ if (!row.from_admin && !row.is_read) map[row.user_id].unread++;
 
 }
 
-// ترتيب: الأحدث أعلى (آخر رسالة)
-
 res.json(Object.values(map).sort((a: any, b: any) => {
 
 const aLast = a.messages[a.messages.length - 1]?.created_at || 0;
@@ -1653,8 +1636,6 @@ return new Date(bLast).getTime() - new Date(aLast).getTime();
 
 });
 
-
-// الأدمن يرد على محادثة تاجر
 
 app.post('/api/admin/support/:userId', requireAuth, async (req: any, res) => {
 
@@ -1677,8 +1658,6 @@ INSERT INTO support_messages (user_id, from_admin, message, image_url)
 VALUES (${userId}, TRUE, ${msgText}, ${imageUrl || null})
 
 `);
-
-// إرسال push notification للتاجر
 
 try {
 
@@ -1707,8 +1686,6 @@ res.json({ success: true });
 });
 
 
-// عدد الرسائل غير المقروءة للتاجر
-
 app.get('/api/support/unread', requireAuth, async (req: any, res) => {
 
 try {
@@ -1727,10 +1704,6 @@ res.json({ count: Number((result.rows[0] as any)?.count || 0) });
 
 });
 
-
-// حظر/فك حظر تاجر من الشات
-
-// تصفير عداد الرسائل الغير مقروءة من الأدمن
 
 app.post('/api/admin/support/:userId/read', requireAuth, async (req: any, res) => {
 
@@ -1774,8 +1747,6 @@ res.json({ success: true });
 });
 
 
-// رفع صورة للشات عبر Cloudinary
-
 app.post('/api/support/upload-image', requireAuth, async (req: any, res) => {
 
 try {
@@ -1784,7 +1755,6 @@ const { imageBase64 } = req.body;
 
 if (!imageBase64) return res.status(400).json({ message: 'لا توجد صورة' });
 
-// ✅ Fix: حد حجم الصورة 5MB
 const base64SizeBytes = Buffer.byteLength(imageBase64, 'base64');
 if (base64SizeBytes > 5 * 1024 * 1024) {
   return res.status(400).json({ message: 'حجم الصورة يجب أن لا يتجاوز 5MB' });
@@ -1865,31 +1835,17 @@ return res.status(404).json({ message: "المستخدم غير موجود" });
 
 }
 
-// حذف الطلبات
-
 await db.delete(orders).where(eq(orders.merchantId, userId));
-
-// حذف طلبات السحب
 
 await db.delete(withdrawals).where(eq(withdrawals.merchantId, userId));
 
-// حذف المفضلة
-
 await db.delete(favorites).where(eq(favorites.userId, userId));
-
-// حذف الإشعارات
 
 await db.delete(notifications).where(eq(notifications.userId, userId));
 
-// حذف رسائل الدعم
-
 await db.delete(supportMessages).where(eq(supportMessages.userId, userId));
 
-// حذف التوكنات
-
 await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
-
-// حذف المستخدم نفسه
 
 await storage.deleteUser(userId);
 
@@ -1918,7 +1874,6 @@ try {
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT NOW()
   )`);
-  // إضافة فئات افتراضية إذا الجدول فارغ
   const existing = await db.execute(`SELECT COUNT(*) as count FROM categories`);
   const count = Number((existing.rows[0] as any)?.count || 0);
   if (count === 0) {
@@ -1936,7 +1891,6 @@ try {
 // ── Categories Routes ──
 // ══════════════════════════════════════════
 
-// جلب كل الفئات النشطة (للتجار والأدمن)
 app.get('/api/categories', async (_req, res) => {
   try {
     const result = await db.select().from(categories)
@@ -1945,7 +1899,6 @@ app.get('/api/categories', async (_req, res) => {
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
-// جلب "الأكثر مبيعاً" — أعلى 10 منتجات بالمبيعات
 app.get('/api/categories/best-sellers', async (_req, res) => {
   try {
     const result = await db.execute(sql`
@@ -1964,7 +1917,6 @@ app.get('/api/categories/best-sellers', async (_req, res) => {
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
-// إضافة فئة (أدمن فقط)
 app.post('/api/categories', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
@@ -1982,13 +1934,11 @@ app.post('/api/categories', requireAuth, async (req: any, res) => {
   }
 });
 
-// تعديل فئة (أدمن فقط)
 app.patch('/api/categories/:id', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
     const { name, icon, sortOrder, isActive } = req.body;
 
-    // ✅ لو تغير الاسم — حدّث المنتجات أيضاً
     if (name !== undefined) {
       const oldCat = await db.select({ name: categories.name })
         .from(categories).where(eq(categories.id, Number(req.params.id))).limit(1);
@@ -2020,17 +1970,14 @@ app.patch('/api/categories/:id', requireAuth, async (req: any, res) => {
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
-// حذف فئة (أدمن فقط)
 app.delete('/api/categories/:id', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
-    // ✅ جلب اسم الفئة قبل الحذف
     const catResult = await db.select().from(categories)
       .where(eq(categories.id, Number(req.params.id))).limit(1);
     const catName = catResult[0]?.name;
 
     if (catName) {
-      // ✅ إزالة اسم الفئة من كل المنتجات — المنتج لا يُحذف
       const prods = await db.select({ id: products.id, category: products.category })
         .from(products)
         .where(sql`category LIKE ${'%' + catName + '%'}`);
@@ -2045,7 +1992,6 @@ app.delete('/api/categories/:id', requireAuth, async (req: any, res) => {
       }
     }
 
-    // ✅ حذف الفئة
     await db.delete(categories).where(eq(categories.id, Number(req.params.id)));
     res.json({ success: true, affectedProducts: catName ? 0 : 0 });
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
@@ -2057,7 +2003,6 @@ app.delete('/api/categories/:id', requireAuth, async (req: any, res) => {
 // ── Inventory Routes ──
 // ══════════════════════════════════════════
 
-// Migration جدول السجل
 try {
   await db.execute(`CREATE TABLE IF NOT EXISTS inventory_log (
     id SERIAL PRIMARY KEY,
@@ -2071,17 +2016,15 @@ try {
   )`);
 } catch (e) { console.log('inventory_log migration:', e); }
 
-// ── جلب المخزون الكامل ──
 app.get('/api/inventory', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
-    const filter = req.query.filter as string; // low | out | stale | all
+    const filter = req.query.filter as string;
     let prods = await storage.getProducts();
 
     if (filter === 'low')  prods = prods.filter((p: any) => p.stock > 0 && p.stock <= 10);
     if (filter === 'out')  prods = prods.filter((p: any) => p.stock === 0);
     if (filter === 'stale') {
-      // منتجات ما بيعت 30 يوم
       const staleResult = await db.execute(sql`
         SELECT DISTINCT product_id FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
@@ -2091,7 +2034,6 @@ app.get('/api/inventory', requireAuth, async (req: any, res) => {
       prods = prods.filter((p: any) => !activeIds.has(p.id) && p.stock > 0);
     }
 
-    // أضف إحصائيات لكل منتج
     const enriched = await Promise.all(prods.map(async (p: any) => {
       const sales = await db.execute(sql`
         SELECT COALESCE(SUM(oi.quantity), 0) as total_sold
@@ -2105,7 +2047,6 @@ app.get('/api/inventory', requireAuth, async (req: any, res) => {
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
-// ── تعديل مخزون منتج يدوياً ──
 app.patch('/api/inventory/:productId', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
@@ -2120,14 +2061,12 @@ app.patch('/api/inventory/:productId', requireAuth, async (req: any, res) => {
     const newStock = Math.max(0, product.stock + Number(change));
     await storage.updateProduct(productId, { stock: newStock });
 
-    // سجّل في inventory_log
     await db.insert(inventoryLog).values({
       productId, adminId: req.user.id,
       change: Number(change), reason, note: note || null,
       stockAfter: newStock,
     });
 
-    // إشعار للأدمن لو نفد المخزون
     if (newStock === 0) {
       try {
         const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
@@ -2146,7 +2085,6 @@ app.patch('/api/inventory/:productId', requireAuth, async (req: any, res) => {
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
-// ── سجل تغييرات مخزون منتج ──
 app.get('/api/inventory/:productId/log', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
@@ -2162,7 +2100,6 @@ app.get('/api/inventory/:productId/log', requireAuth, async (req: any, res) => {
   } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 });
 
-// ── إحصائيات المخزون العامة ──
 app.get('/api/inventory/stats', requireAuth, async (req: any, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
   try {
