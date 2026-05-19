@@ -15,71 +15,40 @@ if (!process.env.SESSION_SECRET) {
 }
 const JWT_SECRET = process.env.SESSION_SECRET;
 
-// ── WhatsApp OTP Sender ─────────────────────────────────────────
-const WA_TOKEN    = process.env.WHATSAPP_TOKEN    || '';
-const WA_PHONE_ID = process.env.WHATSAPP_PHONE_ID || '';
+// ── Otpiq OTP Sender ─────────────────────────────────────────────
+const OTPIQ_KEY = process.env.OTPIQ_API_KEY || '';
 
 async function sendOtpWhatsApp(phone: string, code: string): Promise<boolean> {
   try {
-    // تحويل رقم العراقي 07xxxxxxxx → 9647xxxxxxxx
+    // تحويل 07xxxxxxxx → +9647xxxxxxxx
     const intlPhone = phone.startsWith('0')
-      ? '964' + phone.slice(1)
+      ? '+964' + phone.slice(1)
+      : phone.startsWith('964')
+      ? '+' + phone
       : phone;
 
-    const res = await fetch(
-      `https://graph.facebook.com/v19.0/${WA_PHONE_ID}/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${WA_TOKEN}`,
-          'Content-Type':  'application/json',
-        },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to: intlPhone,
-          type: 'template',
-          template: {
-            name: 'authentication_international_ar',
-            language: { code: 'ar' },
-            components: [{
-              type: 'body',
-              parameters: [{ type: 'text', text: code }],
-            }, {
-              type: 'button',
-              sub_type: 'url',
-              index: '0',
-              parameters: [{ type: 'text', text: code }],
-            }],
-          },
-        }),
-      }
-    );
+    const res = await fetch('https://api.otpiq.com/api/sms', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OTPIQ_KEY}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({
+        phoneNumber:      intlPhone,
+        smsType:          'verification',
+        provider:         'whatsapp-sms',   // واتساب أولاً، لو فشل SMS
+        verificationCode: code,
+      }),
+    });
 
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      // fallback: رسالة نصية عادية
-      const fallback = await fetch(
-        `https://graph.facebook.com/v19.0/${WA_PHONE_ID}/messages`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${WA_TOKEN}`,
-            'Content-Type':  'application/json',
-          },
-          body: JSON.stringify({
-            messaging_product: 'whatsapp',
-            to: intlPhone,
-            type: 'text',
-            text: {
-              body: `🔐 رمز التحقق الخاص بك في تسليم:\n\n*${code}*\n\nصالح لمدة 5 دقائق.\nلا تشاركه مع أحد.`
-            },
-          }),
-        }
-      );
-      return fallback.ok;
+      console.error('Otpiq error:', data);
+      return false;
     }
     return true;
   } catch (e) {
-    console.error('WhatsApp OTP error:', e);
+    console.error('Otpiq OTP error:', e);
     return false;
   }
 }
@@ -101,7 +70,6 @@ function generateOtp(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Rate limit لإرسال OTP: 3 طلبات كحد أقصى في الساعة لنفس الرقم
 const otpRateMap = new Map<string, { count: number; resetAt: number }>();
 function checkOtpRate(phone: string): boolean {
   const now   = Date.now();
@@ -132,9 +100,9 @@ function authRateLimit(req: any, res: any, next: any) {
   next();
 }
 
-// ── حظر بعد 5 محاولات فاشلة لنفس الرقم ──
+// ── حظر بعد 5 محاولات فاشلة ──
 const loginFailMap = new Map<string, { count: number; blockedUntil: number }>();
-const BLOCK_DURATION = 15 * 60 * 1000; // 15 دقيقة
+const BLOCK_DURATION = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 
 function checkLoginBlock(phone: string): { blocked: boolean; minutesLeft?: number } {
@@ -179,7 +147,6 @@ async function comparePasswords(supplied: string, stored: string) {
   return timingSafeEqual(hashedPasswordBuf, suppliedPasswordBuf);
 }
 
-// JWT Middleware — يجيب الـ user من الداتابيس دايماً لضمان أحدث بيانات
 export function requireAuth(req: any, res: any, next: any) {
   const auth = req.headers['authorization'];
   if (!auth || !auth.startsWith('Bearer ')) {
@@ -188,7 +155,6 @@ export function requireAuth(req: any, res: any, next: any) {
   try {
     const token = auth.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    // نجيب الـ user من الداتابيس عشان نضمن is_super_admin و permissions محدثين
     storage.getUser(decoded.id).then(user => {
       if (!user) return res.status(401).json({ message: "Unauthorized" });
       const { password: _, ...u } = user;
@@ -203,46 +169,30 @@ export function requireAuth(req: any, res: any, next: any) {
 
 export function setupAuth(app: Express) {
 
-  // ── 1. إرسال OTP للتسجيل ─────────────────────────────────────
+  // ── 1. إرسال OTP ─────────────────────────────────────────────
   app.post("/api/auth/send-otp", authRateLimit, async (req, res) => {
     try {
       const { phone, type = 'register' } = req.body;
-
       if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
         return res.status(400).json({ message: 'رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم' });
-
-      // التحقق من rate limit
       if (!checkOtpRate(phone))
         return res.status(429).json({ message: 'تجاوزت الحد المسموح، حاول بعد ساعة' });
-
-      // لو تسجيل — تأكد الرقم غير مسجل
       if (type === 'register') {
         const existing = await storage.getUserByPhone(phone.trim());
         if (existing) return res.status(400).json({ message: 'رقم الهاتف مسجل مسبقاً' });
       }
-
-      // لو نسيان كلمة المرور — تأكد الرقم موجود
       if (type === 'forgot_password') {
         const user = await storage.getUserByPhone(phone.trim());
         if (!user) return res.status(404).json({ message: 'هذا الرقم غير مسجل في تسليم' });
       }
-
       const code      = generateOtp();
       const codeHash  = await hashOtp(code);
-      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 دقائق
-
-      // احذف الكودات القديمة لنفس الرقم ونفس النوع
-      await db.delete(otpCodes)
-        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, type)));
-
-      // أنشئ كود جديد
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+      await db.delete(otpCodes).where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, type)));
       await db.insert(otpCodes).values({ phone, codeHash, type, expiresAt, attempts: 0, used: false });
-
-      // أرسل عبر واتساب
       const sent = await sendOtpWhatsApp(phone, code);
       if (!sent) return res.status(500).json({ message: 'فشل إرسال رمز التحقق، حاول مرة أخرى' });
-
-      res.json({ message: 'تم إرسال رمز التحقق على واتساب' });
+      res.json({ message: 'تم إرسال رمز التحقق' });
     } catch (e) {
       console.error('send-otp error:', e);
       res.status(500).json({ message: 'حدث خطأ في الخادم' });
@@ -253,36 +203,27 @@ export function setupAuth(app: Express) {
   app.post("/api/auth/resend-otp", authRateLimit, async (req, res) => {
     try {
       const { phone, type = 'register' } = req.body;
-
       if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
         return res.status(400).json({ message: 'رقم هاتف غير صحيح' });
-
       if (!checkOtpRate(phone))
         return res.status(429).json({ message: 'تجاوزت الحد المسموح، حاول بعد ساعة' });
-
       const code      = generateOtp();
       const codeHash  = await hashOtp(code);
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-      await db.delete(otpCodes)
-        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, type)));
-
+      await db.delete(otpCodes).where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, type)));
       await db.insert(otpCodes).values({ phone, codeHash, type, expiresAt, attempts: 0, used: false });
-
       const sent = await sendOtpWhatsApp(phone, code);
       if (!sent) return res.status(500).json({ message: 'فشل إرسال رمز التحقق' });
-
       res.json({ message: 'تم إعادة إرسال رمز التحقق' });
     } catch (e) {
       res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
-  // ── 3. التسجيل مع التحقق من OTP ─────────────────────────────
+  // ── 3. التسجيل مع OTP ────────────────────────────────────────
   app.post("/api/auth/register", authRateLimit, async (req, res) => {
     try {
       const { phone, password, storeName, address, otpCode } = req.body;
-
       if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
         return res.status(400).json({ message: 'رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم' });
       if (!password || password.trim().length < 6)
@@ -292,42 +233,26 @@ export function setupAuth(app: Express) {
       if (!otpCode)
         return res.status(400).json({ message: 'رمز التحقق مطلوب' });
 
-      // ✅ تحقق من الـ OTP
-      const now  = new Date();
+      const now = new Date();
       const otpRows = await db.select().from(otpCodes)
-        .where(and(
-          eq(otpCodes.phone, phone),
-          eq(otpCodes.type, 'register'),
-          eq(otpCodes.used, false),
-          gt(otpCodes.expiresAt, now)
-        ))
+        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, 'register'), eq(otpCodes.used, false), gt(otpCodes.expiresAt, now)))
         .limit(1);
-
       if (!otpRows.length)
         return res.status(400).json({ message: 'رمز التحقق منتهي أو غير موجود، أعد الإرسال' });
 
       const otp = otpRows[0];
-
-      // حد المحاولات
       if (otp.attempts >= 3) {
         await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
         return res.status(400).json({ message: 'تجاوزت عدد المحاولات، أعد إرسال الرمز' });
       }
-
       const valid = await verifyOtp(otpCode, otp.codeHash);
       if (!valid) {
-        await db.update(otpCodes)
-          .set({ attempts: otp.attempts + 1 })
-          .where(eq(otpCodes.id, otp.id));
+        await db.update(otpCodes).set({ attempts: otp.attempts + 1 }).where(eq(otpCodes.id, otp.id));
         const remaining = 3 - (otp.attempts + 1);
         return res.status(400).json({
-          message: remaining > 0
-            ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولة`
-            : 'رمز التحقق غير صحيح'
+          message: remaining > 0 ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولة` : 'رمز التحقق غير صحيح'
         });
       }
-
-      // الرمز صح — سجّله كمستخدم
       const existing = await storage.getUserByPhone(phone.trim());
       if (existing) return res.status(400).json({ message: 'رقم الهاتف مسجل مسبقاً' });
 
@@ -337,10 +262,7 @@ export function setupAuth(app: Express) {
         password: await hashPassword(password),
         role: 'merchant', merchantId, balance: 0, pendingBalance: 0,
       });
-
-      // احذف الـ OTP بعد الاستخدام
       await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
-
       const { password: _, ...u } = user;
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
       res.status(201).json({ ...u, token });
@@ -350,14 +272,10 @@ export function setupAuth(app: Express) {
     }
   });
 
-  // ── 4. نسيان كلمة المرور — إرسال OTP ────────────────────────
-  // (يستخدم /api/auth/send-otp مع type: 'forgot_password')
-
   // ── 5. إعادة تعيين كلمة المرور ──────────────────────────────
   app.post("/api/auth/reset-password", authRateLimit, async (req, res) => {
     try {
       const { phone, otpCode, newPassword } = req.body;
-
       if (!phone || !otpCode || !newPassword)
         return res.status(400).json({ message: 'جميع الحقول مطلوبة' });
       if (newPassword.length < 6)
@@ -365,89 +283,65 @@ export function setupAuth(app: Express) {
 
       const now = new Date();
       const otpRows = await db.select().from(otpCodes)
-        .where(and(
-          eq(otpCodes.phone, phone),
-          eq(otpCodes.type, 'forgot_password'),
-          eq(otpCodes.used, false),
-          gt(otpCodes.expiresAt, now)
-        ))
+        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, 'forgot_password'), eq(otpCodes.used, false), gt(otpCodes.expiresAt, now)))
         .limit(1);
-
       if (!otpRows.length)
         return res.status(400).json({ message: 'رمز التحقق منتهي أو غير موجود' });
 
       const otp = otpRows[0];
-
       if (otp.attempts >= 3) {
         await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
         return res.status(400).json({ message: 'تجاوزت عدد المحاولات، أعد إرسال الرمز' });
       }
-
       const valid = await verifyOtp(otpCode, otp.codeHash);
       if (!valid) {
-        await db.update(otpCodes)
-          .set({ attempts: otp.attempts + 1 })
-          .where(eq(otpCodes.id, otp.id));
+        await db.update(otpCodes).set({ attempts: otp.attempts + 1 }).where(eq(otpCodes.id, otp.id));
         const remaining = 3 - (otp.attempts + 1);
         return res.status(400).json({
-          message: remaining > 0
-            ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولة`
-            : 'رمز التحقق غير صحيح'
+          message: remaining > 0 ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولة` : 'رمز التحقق غير صحيح'
         });
       }
-
       const user = await storage.getUserByPhone(phone);
       if (!user) return res.status(404).json({ message: 'المستخدم غير موجود' });
-
       await storage.updateUser(user.id, { password: await hashPassword(newPassword) });
       await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
       clearLoginFail(phone);
-
       res.json({ message: 'تم تغيير كلمة المرور بنجاح' });
     } catch (e) {
       res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
-  // ── 6. تغيير كلمة المرور من الإعدادات (مع OTP) ──────────────
+  // ── 6. تغيير كلمة المرور من الإعدادات ──────────────────────
   app.post("/api/auth/request-change-password", requireAuth, async (req: any, res) => {
     try {
       const phone = req.user.phone;
       if (!checkOtpRate(phone))
         return res.status(429).json({ message: 'تجاوزت الحد المسموح، حاول بعد ساعة' });
-
       const code      = generateOtp();
       const codeHash  = await hashOtp(code);
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-      await db.delete(otpCodes)
-        .where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, 'change_password')));
-
+      await db.delete(otpCodes).where(and(eq(otpCodes.phone, phone), eq(otpCodes.type, 'change_password')));
       await db.insert(otpCodes).values({ phone, codeHash, type: 'change_password', expiresAt, attempts: 0, used: false });
-
       const sent = await sendOtpWhatsApp(phone, code);
       if (!sent) return res.status(500).json({ message: 'فشل إرسال رمز التحقق' });
-
-      res.json({ message: 'تم إرسال رمز التحقق على واتساب' });
+      res.json({ message: 'تم إرسال رمز التحقق' });
     } catch (e) {
       res.status(500).json({ message: 'حدث خطأ في الخادم' });
     }
   });
 
-  // Login
+  // ── Login ─────────────────────────────────────────────────────
   app.post("/api/auth/login", authRateLimit, async (req, res) => {
     try {
       const { phone, password } = req.body;
       if (!phone) return res.status(400).json({ message: 'يرجى إدخال رقم الهاتف' });
-
-      // تحقق من الحظر
       const blockStatus = checkLoginBlock(phone);
       if (blockStatus.blocked) {
         return res.status(429).json({
           message: `تم تعليق حسابك مؤقتاً بسبب محاولات متعددة. حاول بعد ${blockStatus.minutesLeft} دقيقة`
         });
       }
-
       const user = await storage.getUserByPhone(phone);
       if (!user || !(await comparePasswords(password, user.password))) {
         recordLoginFail(phone);
@@ -458,8 +352,6 @@ export function setupAuth(app: Express) {
           : 'رقم الهاتف أو كلمة المرور غير صحيحة';
         return res.status(401).json({ message: msg });
       }
-
-      // نجح الدخول — امسح سجل الفشل
       clearLoginFail(phone);
       const { password: _, ...u } = user;
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });
@@ -469,12 +361,12 @@ export function setupAuth(app: Express) {
     }
   });
 
-  // Logout
+  // ── Logout ────────────────────────────────────────────────────
   app.post("/api/auth/logout", (req, res) => {
     res.json({ message: "تم تسجيل الخروج" });
   });
 
-  // Me
+  // ── Me ────────────────────────────────────────────────────────
   app.get("/api/auth/me", requireAuth, async (req: any, res) => {
     try {
       const user = await storage.getUser(req.user.id);
@@ -486,7 +378,7 @@ export function setupAuth(app: Express) {
     }
   });
 
-  // Refresh Token — يجدد التوكن قبل انتهاء صلاحيته
+  // ── Refresh Token ─────────────────────────────────────────────
   app.post("/api/auth/refresh", requireAuth, async (req: any, res) => {
     try {
       const user = await storage.getUser(req.user.id);
@@ -499,13 +391,12 @@ export function setupAuth(app: Express) {
     }
   });
 
-  // Update Profile
+  // ── Update Profile ────────────────────────────────────────────
   app.patch("/api/auth/profile", requireAuth, async (req: any, res) => {
     try {
       const { storeName, phone, address, currentPassword, newPassword } = req.body;
       const user = await storage.getUser(req.user.id);
       if (!user) return res.status(404).json({ message: 'المستخدم غير موجود' });
-
       if (newPassword) {
         if (!currentPassword) return res.status(400).json({ message: 'يرجى إدخال كلمة المرور الحالية' });
         const valid = await comparePasswords(currentPassword, user.password);
@@ -514,7 +405,6 @@ export function setupAuth(app: Express) {
         await storage.updateUser(req.user.id, { password: hashed });
         return res.json({ message: 'تم تغيير كلمة المرور بنجاح' });
       }
-
       const updates: any = {};
       if (storeName) updates.storeName = storeName;
       if (phone) updates.phone = phone;
