@@ -571,20 +571,15 @@ await Promise.all(enrichedItems.map(async (item: any) => {
 }));
 
 
-// تحديث رصيد التاجر (الأرباح تضاف فقط إذا الطلب بحالة مربحة)
-// ✅ بما أن الحالة الافتراضية "processing" وهي من الحالات المربحة، نضيف الأرباح
+// ✅ تحديث رصيد التاجر - الأرباح تضاف فقط إلى pending_balance وليس balance
+// لأن الطلب لا يزال قيد المعالجة، والأرباح الحقيقية تضاف فقط عند التسليم (delivered)
 const freshUser = await storage.getUser(req.user.id);
 
 if (freshUser) {
-
-await storage.updateUser(req.user.id, {
-
-pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
-
-balance: (freshUser.balance || 0) + totalProfit, // ✅ إضافة الأرباح للرصيد فوراً
-
-});
-
+  await storage.updateUser(req.user.id, {
+    pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
+    // ❌ لا نضيف إلى balance هنا - balance يضاف فقط عند delivered
+  });
 }
 
 // ✅ إشعار للأدمن عند إنشاء طلب جديد
@@ -637,30 +632,53 @@ try {
   // الحالة الجديدة من ضمن الحالات المربحة؟
   const newIsProfitable = PROFIT_STATUSES.includes(newStatus);
   
-  // حالة 1: كان مربح و صار غير مربح (cancelled/returned) → احذف الأرباح من التاجر
+  // حالة 1: كان مربح و صار غير مربح (cancelled/returned) → احذف الأرباح من pending_balance فقط
+  // ملاحظة: balance لا يتغير هنا لأنه لم يضاف أصلاً عند إنشاء الطلب
   if (oldWasProfitable && LOSS_STATUSES.includes(newStatus)) {
     await db.execute(
       sql`UPDATE users
-          SET balance = GREATEST(0, balance - ${order.totalProfit}),
-              pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
+          SET pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
           WHERE id = ${order.merchantId}`
     );
-    console.log(`💰 تم خصم أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
+    console.log(`💰 تم خصم الأرباح المعلقة للطلب #${order.id} (${order.totalProfit} د.ع) من حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
   }
   
-  // حالة 2: كان غير مربح و صار مربح (من cancelled/returned إلى processing/shipping/delivered/postponed) → أضف الأرباح للتاجر
+  // حالة 2: كان غير مربح و صار مربح (من cancelled/returned إلى processing/shipping/delivered/postponed) → أضف الأرباح إلى pending_balance
   else if (LOSS_STATUSES.includes(oldStatus) && newIsProfitable) {
     await db.execute(
       sql`UPDATE users
-          SET balance = balance + ${order.totalProfit},
-              pending_balance = pending_balance + ${order.totalProfit}
+          SET pending_balance = pending_balance + ${order.totalProfit}
           WHERE id = ${order.merchantId}`
     );
-    console.log(`💰 تم إضافة أرباح الطلب #${order.id} (${order.totalProfit} د.ع) إلى حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
+    console.log(`💰 تم إضافة الأرباح المعلقة للطلب #${order.id} (${order.totalProfit} د.ع) إلى حساب التاجر ${order.merchantId} بسبب تغيير الحالة إلى ${newStatus}`);
   }
   
   // حالة 3: delivered ←→ processing/shipping/postponed (تبقى مربحة) → لا تغيير في الأرباح
-  // حالة 4: cancelled ←→ returned (تبقى غير مربحة) → لا تغيير في الأرباح
+  
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // معالجة حالة delivered بشكل منفصل (نقل من pending_balance إلى balance)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  if (newStatus === "delivered" && oldStatus !== "delivered") {
+    await db.execute(
+      sql`UPDATE users
+          SET balance = balance + ${order.totalProfit},
+              pending_balance = GREATEST(0, pending_balance - ${order.totalProfit})
+          WHERE id = ${order.merchantId}`
+    );
+    console.log(`💰 تم تحويل أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من المعلقة إلى الرصيد الفعلي للتاجر ${order.merchantId}`);
+  }
+  
+  // إذا تم تغيير الحالة من delivered إلى حالة أخرى (مثلاً postponed)
+  else if (oldStatus === "delivered" && newStatus !== "delivered") {
+    await db.execute(
+      sql`UPDATE users
+          SET balance = GREATEST(0, balance - ${order.totalProfit}),
+              pending_balance = pending_balance + ${order.totalProfit}
+          WHERE id = ${order.merchantId}`
+    );
+    console.log(`💰 تم إرجاع أرباح الطلب #${order.id} (${order.totalProfit} د.ع) من الرصيد الفعلي إلى المعلقة بسبب تغيير الحالة من delivered إلى ${newStatus}`);
+  }
   
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // تحديث حالة الطلب في قاعدة البيانات
