@@ -265,6 +265,7 @@ console.log('✅ Support updates migration done');
 
 // ── Products ──
 
+// ✅ endpoint عادي: يعيد المنتجات النشطة فقط (للمستخدم العادي في الصفحة الرئيسية)
 app.get("/api/products", async (req: any, res) => {
 
 try {
@@ -279,6 +280,17 @@ res.json(activeOnly ? all.filter((p: any) => p.isActive !== false) : all);
 
 catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 
+});
+
+// ✅ endpoint جديد: يعيد جميع المنتجات (بما فيها النافذة والمخفية) - لصفحة المفضلات والأدمن
+app.get("/api/products/all", requireAuth, async (req: any, res) => {
+  try {
+    const all = await storage.getProducts(); // لا نفلتر أي شيء
+    res.json(all);
+  } catch (e: any) { 
+    console.error("Error getting all products:", e);
+    res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
+  }
 });
 
 
