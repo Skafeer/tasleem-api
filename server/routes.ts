@@ -912,6 +912,7 @@ res.json(await storage.getWithdrawals(merchantId));
 });
 
 
+// ✅ تم تعديل هذا الجزء لإصلاح ثغرة سحب الأرباح وإضافة إشعار للأدمن
 app.post("/api/withdrawals", requireAuth, generalLimiter, async (req: any, res) => {
 try {
   const amt = Number(req.body.amount);
@@ -933,11 +934,30 @@ try {
     status: "pending",
   });
 
+  // ✅ إضافة: إشعار للأدمن عند طلب سحب جديد
+  try {
+    const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+    const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+    if (adminIds.length > 0) {
+      const { sendPushNotification } = await import('./notifications');
+      await sendPushNotification({
+        userIds: adminIds,
+        title: '💰 طلب سحب جديد',
+        body: `طلب سحب بقيمة ${amt.toLocaleString()} د.ع من ${req.user.storeName || req.user.phone}`,
+        data: { type: 'new_withdrawal', withdrawalId: w.id, amount: amt, merchantId: req.user.id },
+      });
+    }
+  } catch (_) {}
+
   res.status(201).json(w);
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+} catch (e: any) { 
+  console.error("Error creating withdrawal:", e);
+  res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
+}
 });
 
 
+// ✅ تم تعديل هذا الجزء لإصلاح ثغرة سحب الأرباح
 app.patch("/api/withdrawals/:id", requireAuth, async (req: any, res) => {
 
 if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
@@ -952,15 +972,45 @@ const w = await storage.getWithdrawal(wId);
 
 if (!w) return res.status(404).json({ message: "طلب السحب غير موجود" });
 
-await storage.updateWithdrawal(wId, { status: newStatus });
-
-if (newStatus === "rejected" && w.status !== "rejected") {
-
+const oldStatus = w.status;
 const merchant = await storage.getUser(w.merchantId);
+if (!merchant) return res.status(404).json({ message: "التاجر غير موجود" });
 
-if (merchant) await storage.updateUser(w.merchantId, { balance: (merchant.balance || 0) + w.amount });
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ✅ المنطق الصحيح لطلبات السحب - إصلاح الثغرة
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+// 1️⃣ الحالة: رفض → أي حالة أخرى (pending / approved / paid)
+//    يجب خصم المبلغ مرة ثانية لأن الرصيد كان قد رجع عند الرفض
+const isRejectedToOther = oldStatus === "rejected" && newStatus !== "rejected";
+
+// 2️⃣ الحالة: أي حالة → رفض
+//    يجب رد المبلغ
+const isAnyToRejected = newStatus === "rejected" && oldStatus !== "rejected";
+
+// 3️⃣ الحالة: لم يحدث تغيير مالي (pending ↔ approved ↔ paid)
+//    لا تغيير في الرصيد (الحالة الطبيعية)
+
+if (isAnyToRejected) {
+  // رد المبلغ
+  await storage.updateUser(w.merchantId, {
+    balance: (merchant.balance || 0) + w.amount
+  });
+  console.log(`💰 تم رد مبلغ ${w.amount} إلى التاجر ${w.merchantId} (رفض الطلب)`);
 }
+else if (isRejectedToOther) {
+  // خصم المبلغ مرة ثانية
+  if ((merchant.balance || 0) < w.amount) {
+    return res.status(400).json({ message: "رصيد التاجر غير كافٍ لخصم المبلغ مرة ثانية" });
+  }
+  await storage.updateUser(w.merchantId, {
+    balance: (merchant.balance || 0) - w.amount
+  });
+  console.log(`💰 تم خصم مبلغ ${w.amount} من التاجر ${w.merchantId} مرة ثانية (إعادة تفعيل الطلب من رفض → ${newStatus})`);
+}
+
+// تحديث حالة الطلب
+await storage.updateWithdrawal(wId, { status: newStatus });
 
 const W_LABELS: Record<string, string> = {
 
@@ -994,7 +1044,10 @@ data: { type: 'withdrawal_status', withdrawalId: wId, status: newStatus },
 
 res.json({ success: true });
 
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+} catch (e: any) { 
+  console.error("Error updating withdrawal:", e);
+  res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
+}
 
 });
 
