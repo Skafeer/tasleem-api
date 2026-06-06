@@ -897,22 +897,61 @@ res.json({ message: "تم حذف الطلب" });
 });
 
 
-// ── Withdrawals ──
+// ═══════════════════════════════════════════════════════════════
+// ── Withdrawals Routes (تم إعادة تنظيمها بالكامل) ──
+// ═══════════════════════════════════════════════════════════════
 
-app.get("/api/withdrawals", requireAuth, async (req: any, res) => {
-
-try {
-
-const merchantId = req.user.role === "admin" ? undefined : req.user.id;
-
-res.json(await storage.getWithdrawals(merchantId));
-
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
-
+// ✅ 1. للتاجر أو الأدمن العادي: يعرض فقط سحوباته الشخصية (لصفحة المحفظة)
+app.get("/api/withdrawals/my", requireAuth, async (req: any, res) => {
+  try {
+    const withdrawals = await storage.getWithdrawals(req.user.id);
+    res.json(withdrawals);
+  } catch (e: any) { 
+    console.error("Error getting my withdrawals:", e);
+    res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
+  }
 });
 
+// ✅ 2. للأدمن فقط: يعرض كل السحوبات لجميع التجار (للوحة التحكم)
+app.get("/api/admin/withdrawals", requireAuth, async (req: any, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ message: "غير مصرح - هذه البيانات للأدمن فقط" });
+  }
+  try {
+    const withdrawals = await storage.getWithdrawals(); // undefined → جميع السحوبات
+    // إضافة اسم المتجر لكل سحب
+    const withdrawalsWithStore = await Promise.all(withdrawals.map(async (w: any) => {
+      const merchant = await storage.getUser(w.merchantId);
+      return {
+        ...w,
+        storeName: merchant?.storeName || merchant?.phone || 'غير معروف'
+      };
+    }));
+    res.json(withdrawalsWithStore);
+  } catch (e: any) { 
+    console.error("Error getting all withdrawals:", e);
+    res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
+  }
+});
 
-// ✅ تم تعديل هذا الجزء لإصلاح ثغرة سحب الأرباح وإضافة إشعار للأدمن
+// ✅ 3. للحفاظ على التوافق مع الإصدارات القديمة (يمكن إزالته لاحقاً)
+app.get("/api/withdrawals", requireAuth, async (req: any, res) => {
+  try {
+    // ننصح باستخدام المسار الجديد
+    if (req.user.role === "admin") {
+      // للأدمن: نعيد توجيهه إلى المسار المخصص للأدمن
+      return res.redirect("/api/admin/withdrawals");
+    }
+    // للتاجر: نعيد سحوباته الشخصية
+    const withdrawals = await storage.getWithdrawals(req.user.id);
+    res.json(withdrawals);
+  } catch (e: any) { 
+    console.error("Error getting withdrawals:", e);
+    res.status(500).json({ message: 'حدث خطأ في الخادم' }); 
+  }
+});
+
+// ✅ إنشاء طلب سحب جديد (للتاجر فقط)
 app.post("/api/withdrawals", requireAuth, generalLimiter, async (req: any, res) => {
 try {
   const amt = Number(req.body.amount);
@@ -934,7 +973,7 @@ try {
     status: "pending",
   });
 
-  // ✅ إضافة: إشعار للأدمن عند طلب سحب جديد
+  // ✅ إشعار للأدمن عند طلب سحب جديد
   try {
     const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
     const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
@@ -956,8 +995,7 @@ try {
 }
 });
 
-
-// ✅ تم تعديل هذا الجزء لإصلاح ثغرة سحب الأرباح
+// ✅ تحديث حالة طلب السحب (للأدمن فقط) - مع إصلاح الثغرة
 app.patch("/api/withdrawals/:id", requireAuth, async (req: any, res) => {
 
 if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
