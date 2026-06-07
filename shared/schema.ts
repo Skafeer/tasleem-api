@@ -41,7 +41,6 @@ export const orders = pgTable("orders", {
   merchantId: integer("merchant_id").notNull(),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
-  backupPhone: text("backup_phone"), // ✅ تمت إضافة الرقم الاحتياطي
   province: text("province").notNull(),
   address: text("address").notNull(),
   notes: text("notes").notNull().default(""),
