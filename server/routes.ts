@@ -443,7 +443,7 @@ app.post("/api/orders", requireAuth, generalLimiter, async (req: any, res) => {
 
 try {
 
-const { items, customerName, customerPhone, province, address, notes, promoCode } = req.body;
+const { items, customerName, customerPhone, province, address, notes, promoCode, backupPhone } = req.body;
 
 if (!items || !Array.isArray(items) || items.length === 0)
 
@@ -539,6 +539,7 @@ merchantId: req.user.id,
 
 customerName, customerPhone, province, address,
 
+backupPhone: backupPhone || null, // ✅ إضافة الرقم الاحتياطي
 notes: notes || "", status: "processing", // الحالة الافتراضية "قيد المعالجة"
 
 totalAmount: finalAmount, shippingCost, totalProfit, companyProfit,
@@ -823,13 +824,15 @@ const order = await storage.getOrder(orderId);
 
 if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
 
-const { customerName, customerPhone, province, address, notes, items } = req.body;
+const { customerName, customerPhone, province, address, notes, items, backupPhone } = req.body;
 
 let updateData: any = {};
 
 if (customerName !== undefined) updateData.customerName = customerName;
 
 if (customerPhone !== undefined) updateData.customerPhone = customerPhone;
+
+if (backupPhone !== undefined) updateData.backupPhone = backupPhone; // ✅ إضافة الرقم الاحتياطي
 
 if (province !== undefined) updateData.province = province;
 
