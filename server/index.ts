@@ -18,6 +18,7 @@ const ALLOWED_ORIGINS = [
   'http://localhost:19006',
   'https://tasleem-dashboard.vercel.app', // Vercel بعدين
     'http://localhost:5173',
+     'https://fantastic-guide-jj454p4wgp7935xxv-8081.app.github.dev/',
   'https://redesigned-parakeet-x59w9g9q47r6fpgj7-5173.app.github.dev',                 // ✅ أضف هذا
       'http://localhost:3000',
   process.env.FRONTEND_URL,
