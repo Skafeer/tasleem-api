@@ -1642,45 +1642,59 @@ res.json(result.rows);
 });
 
 
+// ✅ تم تعديل هذا الـ endpoint لإرسال إشعار للأدمن عند تلقي رسالة جديدة
 app.post('/api/support/messages', requireAuth, async (req: any, res) => {
-
-try {
-
-const userResult = await db.execute(sql`SELECT support_blocked FROM users WHERE id = ${req.user.id}`);
-
-const isBlocked = (userResult.rows[0] as any)?.support_blocked;
-
-if (isBlocked) return res.status(403).json({ message: 'تم حظرك من إرسال الرسائل' });
+  try {
+    const userResult = await db.execute(sql`SELECT support_blocked FROM users WHERE id = ${req.user.id}`);
+    const isBlocked = (userResult.rows[0] as any)?.support_blocked;
+    if (isBlocked) return res.status(403).json({ message: 'تم حظرك من إرسال الرسائل' });
 
 
-const { message, imageUrl } = req.body;
+    const { message, imageUrl } = req.body;
 
-if (!message?.trim() && !imageUrl) return res.status(400).json({ message: 'الرسالة فارغة' });
-
-
-const BAD_WORDS = ['كلب', 'حمار', 'غبي', 'احمق', 'خنزير', 'عاهرة', 'شرموطة', 'منيوك', 'ابن الكلب'];
-
-let filteredMsg = (message || '').trim();
-
-for (const word of BAD_WORDS) {
-
-filteredMsg = filteredMsg.replace(new RegExp(word, 'gi'), '***');
-
-}
+    if (!message?.trim() && !imageUrl) return res.status(400).json({ message: 'الرسالة فارغة' });
 
 
-await db.execute(sql`
+    const BAD_WORDS = ['كلب', 'حمار', 'غبي', 'احمق', 'خنزير', 'عاهرة', 'شرموطة', 'منيوك', 'ابن الكلب'];
 
-INSERT INTO support_messages (user_id, from_admin, message, image_url)
+    let filteredMsg = (message || '').trim();
 
-VALUES (${req.user.id}, FALSE, ${filteredMsg}, ${imageUrl || null})
+    for (const word of BAD_WORDS) {
 
-`);
+      filteredMsg = filteredMsg.replace(new RegExp(word, 'gi'), '***');
 
-res.json({ success: true });
+    }
 
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
 
+    await db.execute(sql`
+
+      INSERT INTO support_messages (user_id, from_admin, message, image_url)
+
+      VALUES (${req.user.id}, FALSE, ${filteredMsg}, ${imageUrl || null})
+
+    `);
+
+    // ✅ إرسال إشعار للأدمن عند تلقي رسالة جديدة من تاجر
+    try {
+      const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+      const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+      if (adminIds.length > 0) {
+        const { sendPushNotification } = await import('./notifications');
+        await sendPushNotification({
+          userIds: adminIds,
+          title: '💬 رسالة دعم جديدة',
+          body: `رسالة جديدة من ${req.user.storeName || req.user.phone}`,
+          data: { type: 'support_message', userId: req.user.id },
+        });
+      }
+    } catch (_) {}
+
+    res.json({ success: true });
+
+  } catch (e: any) {
+    console.error('Error in support messages:', e);
+    res.status(500).json({ message: 'حدث خطأ في الخادم' });
+  }
 });
 
 
