@@ -1932,31 +1932,95 @@ res.json({ url: result.secure_url });
 });
 
 
-// ── Stats endpoint مخصص ──
+// ── Stats endpoint مخصص (محسن) ──
+app.get("/api/admin/stats-data", requireAuth, async (req: any, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ message: "غير مصرح" });
+  }
 
-app.get('/api/admin/stats-data', requireAuth, async (req: any, res) => {
+  try {
+    // جلب جميع البيانات المطلوبة بالتوازي
+    const [ordersData, usersData, withdrawalsData, productsData] = await Promise.all([
+      storage.getOrders(),           // جميع الطلبات
+      storage.getAllUsers(),         // جميع المستخدمين (مع إخفاء الباسورد)
+      storage.getWithdrawals(),      // جميع السحوبات
+      storage.getProducts(),         // جميع المنتجات
+    ]);
 
-if (req.user.role !== 'admin') return res.status(403).json({ message: 'غير مصرح' });
+    // ✅ إضافة إجمالي الأرباح لكل طلب إذا لم يكن موجوداً
+    const ordersWithProfit = ordersData.map((order: any) => {
+      if (order.totalProfit === undefined || order.totalProfit === null) {
+        // حساب الربح من الطلب إذا لم يكن مخزناً
+        const itemsTotal = order.items?.reduce((sum: number, item: any) => {
+          return sum + ((item.price || 0) * (item.quantity || 1));
+        }, 0) || 0;
+        const shippingCost = order.shippingCost || 0;
+        const promoDiscount = order.promoDiscount || 0;
+        const totalCost = order.items?.reduce((sum: number, item: any) => {
+          return sum + ((item.cost || 0) * (item.quantity || 1));
+        }, 0) || 0;
+        order.totalProfit = itemsTotal - totalCost - promoDiscount;
+        order.companyProfit = totalCost - (order.companyWholesalePrice || totalCost);
+      }
+      return order;
+    });
 
-try {
+    // ✅ حساب إحصائيات التجار
+    const merchants = usersData.filter((u: any) => u.role !== 'admin');
+    const merchantsWithStats = merchants.map((merchant: any) => {
+      const merchantOrders = ordersData.filter((o: any) => o.merchantId === merchant.id);
+      const delivered = merchantOrders.filter((o: any) => o.status === 'delivered');
+      return {
+        ...merchant,
+        totalOrders: merchantOrders.length,
+        deliveredOrders: delivered.length,
+        totalRevenue: delivered.reduce((sum: number, o: any) => sum + (o.totalAmount || 0), 0),
+        totalProfit: delivered.reduce((sum: number, o: any) => sum + (o.totalProfit || 0), 0),
+      };
+    });
 
-const [orders, withdrawals, products] = await Promise.all([
+    // ✅ إحصائيات المنتجات
+    const productsWithStats = productsData.map((product: any) => {
+      const productOrders = ordersData.filter((o: any) => 
+        o.status === 'delivered' && o.items?.some((item: any) => item.productId === product.id)
+      );
+      const totalSold = productOrders.reduce((sum: number, o: any) => {
+        const item = o.items?.find((i: any) => i.productId === product.id);
+        return sum + (item?.quantity || 0);
+      }, 0);
+      return {
+        ...product,
+        totalSold,
+        revenue: productOrders.reduce((sum: number, o: any) => {
+          const item = o.items?.find((i: any) => i.productId === product.id);
+          return sum + ((item?.price || 0) * (item?.quantity || 1));
+        }, 0),
+      };
+    });
 
-storage.getOrders(undefined),
+    res.json({
+      orders: ordersWithProfit,
+      users: usersData,
+      withdrawals: withdrawalsData,
+      products: productsWithStats,
+      merchants: merchantsWithStats,
+      // ✅ إحصائيات إضافية مفيدة
+      stats: {
+        totalOrders: ordersData.length,
+        totalUsers: usersData.length,
+        totalMerchants: merchants.length,
+        totalProducts: productsData.length,
+        totalWithdrawals: withdrawalsData.length,
+      },
+    });
 
-storage.getWithdrawals(),
-
-storage.getProducts(),
-
-]);
-
-const usersResult = await db.execute(sql`SELECT id, store_name, phone, merchant_id, role, balance, pending_balance, is_active, created_at FROM users`);
-  const users = usersResult.rows;
-
-res.json({ orders, users, withdrawals, products });
-
-} catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
-
+  } catch (error: any) {
+    console.error('Error in /api/admin/stats-data:', error);
+    res.status(500).json({ 
+      message: 'حدث خطأ أثناء جلب الإحصائيات',
+      error: error.message 
+    });
+  }
 });
 
 
