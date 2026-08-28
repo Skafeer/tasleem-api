@@ -141,8 +141,14 @@ async function hashPassword(password: string) {
 }
 
 async function comparePasswords(supplied: string, stored: string) {
-  const [hashed, salt] = stored.split(".");
-  const hashedPasswordBuf = Buffer.from(hashed, "hex");
+  // ✅ دعم bcryptjs للحسابات القديمة
+  if (stored.startsWith('$2')) {
+    const bcrypt = await import('bcryptjs');
+    return bcrypt.compare(supplied, stored);
+  }
+  // scrypt للحسابات الجديدة
+  const [hashed, salt] = stored.split('.');
+  const hashedPasswordBuf = Buffer.from(hashed, 'hex');
   const suppliedPasswordBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
   return timingSafeEqual(hashedPasswordBuf, suppliedPasswordBuf);
 }
