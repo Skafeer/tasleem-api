@@ -532,11 +532,16 @@ const isBasra = province.includes("البصرة");
 
 const shippingCost = isBasra ? 3000 : 5000;
 
-const totalProfit = totalAmount - totalCost - promoDiscount;
+// ✅ السلايدر: خصم التوصيل من ربح التاجر
+const rawSubsidy      = Number(req.body.shippingSubsidy || 0);
+const shippingSubsidy = Math.max(0, Math.min(rawSubsidy, shippingCost)); // 0 → shippingCost
+const customerShipping = shippingCost - shippingSubsidy;
+
+const totalProfit = totalAmount - totalCost - promoDiscount - shippingSubsidy;
 
 const companyProfit = totalCost - totalCompanyCost;
 
-const finalAmount = totalAmount + shippingCost - promoDiscount;
+const finalAmount = totalAmount + customerShipping - promoDiscount;
 
 
 const order = await storage.createOrder({
@@ -545,10 +550,10 @@ merchantId: req.user.id,
 
 customerName, customerPhone, province, address,
 
-backupPhone: backupPhone || null, // ✅ إضافة رقم الهاتف الاحتياطي
-notes: notes || "", status: "processing", // الحالة الافتراضية "قيد المعالجة"
+backupPhone: backupPhone || null,
+notes: notes || "", status: "processing",
 
-totalAmount: finalAmount, shippingCost, totalProfit, companyProfit,
+totalAmount: finalAmount, shippingCost: customerShipping, totalProfit, companyProfit,
 
 promoCode: validPromo, promoDiscount,
 
