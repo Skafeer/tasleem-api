@@ -12,7 +12,6 @@ export const users = pgTable("users", {
   balance: real("balance").notNull().default(0),
   pendingBalance: real("pending_balance").notNull().default(0),
   isSuperAdmin: boolean("is_super_admin").notNull().default(false),
-  // JSON array of permissions: ["orders","products","withdrawals","merchants","promos","banners","stats","notifications"]
   permissions: text("permissions").notNull().default("[]"),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -41,7 +40,7 @@ export const orders = pgTable("orders", {
   merchantId: integer("merchant_id").notNull(),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
-  backupPhone: text("backup_phone"), // ✅ إضافة رقم الهاتف الاحتياطي
+  backupPhone: text("backup_phone"),
   province: text("province").notNull(),
   address: text("address").notNull(),
   notes: text("notes").notNull().default(""),
@@ -74,11 +73,49 @@ export const withdrawals = pgTable("withdrawals", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ══════════════════════════════════════════════════════════════════
+// ── Promo Codes (محدّث بالكامل) ──
+// ══════════════════════════════════════════════════════════════════
 export const promoCodes = pgTable("promo_codes", {
   id: serial("id").primaryKey(),
   code: text("code").notNull().unique(),
-  discountPercent: real("discount_percent").notNull(),
+  title: text("title").notNull().default(""),
+  description: text("description").notNull().default(""),
+
+  // ── نوع الخصم ──
+  // 'percentage' = نسبة مئوية | 'fixed' = مبلغ ثابت
+  discountType: text("discount_type").notNull().default("percentage"),
+  discountPercent: real("discount_percent").notNull().default(0),   // للنسبة
+  discountAmount: real("discount_amount").notNull().default(0),     // للمبلغ الثابت
+  maxDiscount: real("max_discount").notNull().default(0),           // 0 = بلا سقف
+
+  // ── النطاق ──
+  // 'all' = جميع التجار | 'specific' = تجار محددون
+  targetType: text("target_type").notNull().default("all"),
+  targetUserIds: text("target_user_ids").notNull().default(""),     // CSV: "1,2,3"
+
+  // ── الشروط ──
+  minCartAmount: real("min_cart_amount").notNull().default(0),      // 0 = بلا حد أدنى
+  startsAt: timestamp("starts_at"),
+  expiresAt: timestamp("expires_at"),
+
+  // ── الاستخدام ──
+  maxUses: integer("max_uses").notNull().default(0),                // 0 = بلا حد
+  maxUsesPerUser: integer("max_uses_per_user").notNull().default(1),// لكل تاجر
+  usedCount: integer("used_count").notNull().default(0),
+
   isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// ── تتبع استخدام الأكواد ──
+export const promoUsages = pgTable("promo_usages", {
+  id: serial("id").primaryKey(),
+  promoId: integer("promo_id").notNull(),
+  userId: integer("user_id").notNull(),
+  orderId: integer("order_id").notNull(),
+  discountAmount: real("discount_amount").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -105,75 +142,73 @@ export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
 export type PromoCode = typeof promoCodes.$inferSelect;
+export type PromoUsage = typeof promoUsages.$inferSelect;
 export type Banner = typeof banners.$inferSelect;
 
 export const pushTokens = pgTable('push_tokens', {
-  id:        serial('id').primaryKey(),
-  userId:    integer('user_id').notNull(),
-  token:     text('token').notNull(),
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull(),
+  token: text('token').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const notifications = pgTable('notifications', {
-  id:        serial('id').primaryKey(),
-  userId:    integer('user_id'),
-  title:     text('title').notNull(),
-  body:      text('body').notNull(),
-  data:      text('data').notNull().default('{}'),
-  isRead:    boolean('is_read').notNull().default(false),
+  id: serial('id').primaryKey(),
+  userId: integer('user_id'),
+  title: text('title').notNull(),
+  body: text('body').notNull(),
+  data: text('data').notNull().default('{}'),
+  isRead: boolean('is_read').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
-export type PushToken    = typeof pushTokens.$inferSelect;
+export type PushToken = typeof pushTokens.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 
 export const favorites = pgTable('favorites', {
-  id:        serial('id').primaryKey(),
-  userId:    integer('user_id').notNull(),
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull(),
   productId: integer('product_id').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const supportMessages = pgTable('support_messages', {
-  id:        serial('id').primaryKey(),
-  userId:    integer('user_id').notNull(),
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull(),
   fromAdmin: boolean('from_admin').notNull().default(false),
-  message:   text('message').notNull(),
-  isRead:    boolean('is_read').notNull().default(false),
+  message: text('message').notNull(),
+  isRead: boolean('is_read').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const categories = pgTable('categories', {
-  id:        serial('id').primaryKey(),
-  name:      text('name').notNull().unique(),
-  icon:      text('icon').notNull().default('grid-outline'),
+  id: serial('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  icon: text('icon').notNull().default('grid-outline'),
   sortOrder: integer('sort_order').notNull().default(0),
-  isActive:  boolean('is_active').notNull().default(true),
+  isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const inventoryLog = pgTable('inventory_log', {
-  id:         serial('id').primaryKey(),
-  productId:  integer('product_id').notNull(),
-  adminId:    integer('admin_id'),
-  change:     integer('change').notNull(),
-  reason:     text('reason').notNull().default('manual'),
-  note:       text('note'),
+  id: serial('id').primaryKey(),
+  productId: integer('product_id').notNull(),
+  adminId: integer('admin_id'),
+  change: integer('change').notNull(),
+  reason: text('reason').notNull().default('manual'),
+  note: text('note'),
   stockAfter: integer('stock_after').notNull(),
-  createdAt:  timestamp('created_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
 });
 
-// ── OTP Codes ─────────────────────────────────────────────────────
 export const otpCodes = pgTable('otp_codes', {
-  id:        serial('id').primaryKey(),
-  phone:     text('phone').notNull(),
-  // الكود مشفّر بـ scrypt — لا يُخزن نص عادي
-  codeHash:  text('code_hash').notNull(),
-  // نوع الـ OTP: register | forgot_password | change_password
-  type:      text('type').notNull().default('register'),
+  id: serial('id').primaryKey(),
+  phone: text('phone').notNull(),
+  codeHash: text('code_hash').notNull(),
+  type: text('type').notNull().default('register'),
   expiresAt: timestamp('expires_at').notNull(),
-  attempts:  integer('attempts').notNull().default(0),
-  used:      boolean('used').notNull().default(false),
+  attempts: integer('attempts').notNull().default(0),
+  used: boolean('used').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
