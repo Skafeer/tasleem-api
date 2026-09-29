@@ -1,6 +1,10 @@
 import { db } from "./db";
-import { users, products, orders, orderItems, withdrawals, favorites, promoCodes, promoUsages } from "@shared/schema";
-import { eq, and, sql, desc } from "drizzle-orm";
+import {
+  users, products, orders, orderItems, withdrawals, favorites,
+  promoCodes, promoUsages,
+  campaigns, campaignParticipants, campaignOrders, campaignRewards,
+} from "@shared/schema";
+import { eq, and, sql, desc, inArray, gte, lte } from "drizzle-orm";
 
 export const storage = {
   // ── Users ──
@@ -174,12 +178,11 @@ export const storage = {
   },
 
   // ═══════════════════════════════════════════════════════════════
-  // ── Promo Codes (جديد) ──
+  // ── Promo Codes ──
   // ═══════════════════════════════════════════════════════════════
 
   async getPromoCodes() {
     const all = await db.select().from(promoCodes).orderBy(desc(promoCodes.createdAt));
-    // حساب عدد المستخدمين لكل كود (اختياري — للأداء نتركها للـ endpoint)
     return all;
   },
 
@@ -208,7 +211,6 @@ export const storage = {
   },
 
   async deletePromoCode(id: number) {
-    // حذف سجلات الاستخدام المرتبطة
     await db.delete(promoUsages).where(eq(promoUsages.promoId, id));
     await db.delete(promoCodes).where(eq(promoCodes.id, id));
   },
@@ -269,5 +271,228 @@ export const storage = {
 
   async deletePromoUsageByOrder(orderId: number) {
     await db.delete(promoUsages).where(eq(promoUsages.orderId, orderId));
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── Campaigns (الحملات / التحديات) ──
+  // ═══════════════════════════════════════════════════════════════
+
+  // ── CRUD أساسي ──
+  async getCampaigns() {
+    const list = await db.select().from(campaigns)
+      .orderBy(desc(campaigns.createdAt));
+    // إضافة معلومات المنتج لكل حملة
+    return await Promise.all(list.map(async (c: any) => {
+      const product = await db.select().from(products)
+        .where(eq(products.id, c.productId)).limit(1);
+      return { ...c, product: product[0] || null };
+    }));
+  },
+
+  async getCampaign(id: number) {
+    const result = await db.select().from(campaigns)
+      .where(eq(campaigns.id, id)).limit(1);
+    if (!result[0]) return null;
+
+    const campaign = result[0];
+    const product = await db.select().from(products)
+      .where(eq(products.id, campaign.productId)).limit(1);
+
+    return { ...campaign, product: product[0] || null };
+  },
+
+  async createCampaign(data: any) {
+    const result = await db.insert(campaigns).values(data).returning();
+    return result[0];
+  },
+
+  async updateCampaign(id: number, data: any) {
+    const result = await db.update(campaigns).set(data)
+      .where(eq(campaigns.id, id)).returning();
+    return result[0];
+  },
+
+  async deleteCampaign(id: number) {
+    // حذف كل البيانات المرتبطة
+    await db.delete(campaignRewards).where(eq(campaignRewards.campaignId, id));
+    await db.delete(campaignOrders).where(eq(campaignOrders.campaignId, id));
+    await db.delete(campaignParticipants).where(eq(campaignParticipants.campaignId, id));
+    await db.delete(campaigns).where(eq(campaigns.id, id));
+  },
+
+  // ── للمشاركين ──
+  async getCampaignParticipants(campaignId: number) {
+    const participants = await db.select().from(campaignParticipants)
+      .where(eq(campaignParticipants.campaignId, campaignId))
+      .orderBy(desc(campaignParticipants.progressCount));
+
+    // إضافة اسم المتجر لكل مشارك
+    return await Promise.all(participants.map(async (p: any) => {
+      const user = await db.select({
+        id: users.id,
+        storeName: users.storeName,
+        phone: users.phone,
+      }).from(users).where(eq(users.id, p.userId)).limit(1);
+      return { ...p, user: user[0] || null };
+    }));
+  },
+
+  async getParticipant(campaignId: number, userId: number) {
+    const result = await db.select().from(campaignParticipants).where(
+      and(
+        eq(campaignParticipants.campaignId, campaignId),
+        eq(campaignParticipants.userId, userId)
+      )
+    ).limit(1);
+    return result[0] || null;
+  },
+
+  async createParticipant(data: any) {
+    const result = await db.insert(campaignParticipants).values(data).returning();
+    return result[0];
+  },
+
+  async updateParticipant(id: number, data: any) {
+    const result = await db.update(campaignParticipants).set(data)
+      .where(eq(campaignParticipants.id, id)).returning();
+    return result[0];
+  },
+
+  // ── للتاجر: كل حملاته مع تفاصيل التقدم ──
+  async getUserCampaigns(userId: number) {
+    const now = new Date();
+
+    // كل الحملات النشطة (يشارك فيها أو لا)
+    const allCampaigns = await db.select().from(campaigns)
+      .orderBy(desc(campaigns.createdAt));
+
+    return await Promise.all(allCampaigns.map(async (c: any) => {
+      const product = await db.select().from(products)
+        .where(eq(products.id, c.productId)).limit(1);
+
+      const participant = await db.select().from(campaignParticipants).where(
+        and(
+          eq(campaignParticipants.campaignId, c.id),
+          eq(campaignParticipants.userId, userId)
+        )
+      ).limit(1);
+
+      const isActive = c.isActive &&
+        new Date(c.startsAt) <= now &&
+        new Date(c.endsAt) >= now;
+
+      const isExpired = new Date(c.endsAt) < now;
+
+      return {
+        ...c,
+        product: product[0] || null,
+        isActive,
+        isExpired,
+        isParticipating: participant.length > 0,
+        progressCount: participant[0]?.progressCount || 0,
+        targetReached: participant[0]?.targetReached || false,
+        rewardClaimed: participant[0]?.rewardClaimed || false,
+      };
+    }));
+  },
+
+  // ── للتفاصيل: الحملة + التقدم + المكافآت المصروفة ──
+  async getCampaignWithProgress(campaignId: number, userId: number) {
+    const campaign = await storage.getCampaign(campaignId);
+    if (!campaign) return null;
+
+    const participant = await storage.getParticipant(campaignId, userId);
+
+    const rewards = await db.select().from(campaignRewards).where(
+      and(
+        eq(campaignRewards.campaignId, campaignId),
+        eq(campaignRewards.userId, userId)
+      )
+    );
+
+    const orders = await db.select().from(campaignOrders).where(
+      and(
+        eq(campaignOrders.campaignId, campaignId),
+        eq(campaignOrders.userId, userId)
+      )
+    ).orderBy(desc(campaignOrders.createdAt));
+
+    return {
+      ...campaign,
+      participant: participant || null,
+      rewards,
+      orders,
+    };
+  },
+
+  // ── مكافآت المستخدم ──
+  async getUserCampaignRewards(userId: number) {
+    const rewards = await db.select().from(campaignRewards)
+      .where(eq(campaignRewards.userId, userId))
+      .orderBy(desc(campaignRewards.createdAt));
+
+    // إضافة معلومات الحملة
+    return await Promise.all(rewards.map(async (r: any) => {
+      const campaign = await db.select({
+        id: campaigns.id,
+        title: campaigns.title,
+        rewardType: campaigns.rewardType,
+      }).from(campaigns).where(eq(campaigns.id, r.campaignId)).limit(1);
+      return { ...r, campaign: campaign[0] || null };
+    }));
+  },
+
+  // ── Campaign Orders (السجل) ──
+  async getCampaignOrders(campaignId: number, userId?: number) {
+    let query = db.select().from(campaignOrders)
+      .where(eq(campaignOrders.campaignId, campaignId));
+
+    if (userId) {
+      query = db.select().from(campaignOrders).where(
+        and(
+          eq(campaignOrders.campaignId, campaignId),
+          eq(campaignOrders.userId, userId)
+        )
+      );
+    }
+
+    return await query.orderBy(desc(campaignOrders.createdAt));
+  },
+
+  async createCampaignOrder(data: any) {
+    const result = await db.insert(campaignOrders).values(data).returning();
+    return result[0];
+  },
+
+  async updateCampaignOrder(id: number, data: any) {
+    const result = await db.update(campaignOrders).set(data)
+      .where(eq(campaignOrders.id, id)).returning();
+    return result[0];
+  },
+
+  // ── إحصائيات الحملة (للأدمن) ──
+  async getCampaignStats(campaignId: number) {
+    const result = await db.execute(sql`
+      SELECT
+        COUNT(DISTINCT user_id) as participants_count,
+        COUNT(*) FILTER (WHERE status = 'counted') as counted_orders,
+        COUNT(*) FILTER (WHERE status = 'rejected') as rejected_orders
+      FROM campaign_orders
+      WHERE campaign_id = ${campaignId}
+    `);
+    const row = result.rows[0] as any;
+
+    const winners = await db.execute(sql`
+      SELECT COUNT(*) as count
+      FROM campaign_participants
+      WHERE campaign_id = ${campaignId} AND target_reached = TRUE
+    `);
+
+    return {
+      participantsCount: Number(row?.participants_count || 0),
+      countedOrders: Number(row?.counted_orders || 0),
+      rejectedOrders: Number(row?.rejected_orders || 0),
+      winnersCount: Number((winners.rows[0] as any)?.count || 0),
+    };
   },
 };
