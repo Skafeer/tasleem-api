@@ -89,6 +89,10 @@ export const promoCodes = pgTable("promo_codes", {
   discountAmount: real("discount_amount").notNull().default(0),     // للمبلغ الثابت
   maxDiscount: real("max_discount").notNull().default(0),           // 0 = بلا سقف
 
+  // ── نطاق التطبيق ──
+  // 'subtotal' = على المنتجات | 'shipping' = على التوصيل
+  appliesTo: text("applies_to").notNull().default("subtotal"),
+
   // ── النطاق ──
   // 'all' = جميع التجار | 'specific' = تجار محددون
   targetType: text("target_type").notNull().default("all"),
@@ -129,6 +133,69 @@ export const banners = pgTable('banners', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// ══════════════════════════════════════════════════════════════════
+// ── Campaigns (الحملات / التحديات) ──
+// ══════════════════════════════════════════════════════════════════
+export const campaigns = pgTable('campaigns', {
+  id: serial('id').primaryKey(),
+  title: text('title').notNull(),
+  description: text('description').notNull().default(''),
+  productId: integer('product_id').notNull(),
+  targetCount: integer('target_count').notNull(),
+  startsAt: timestamp('starts_at').notNull(),
+  endsAt: timestamp('ends_at').notNull(),
+  // cashback | shipping_code | product_code | free_shipping
+  rewardType: text('reward_type').notNull(),
+  rewardValue: real('reward_value').notNull().default(0),
+  // JSON: { codePrefix?, expiresInDays?, maxDiscount? }
+  rewardData: text('reward_data').notNull().default('{}'),
+  isActive: boolean('is_active').notNull().default(true),
+  isDistributed: boolean('is_distributed').notNull().default(false),
+  distributedAt: timestamp('distributed_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const campaignParticipants = pgTable('campaign_participants', {
+  id: serial('id').primaryKey(),
+  campaignId: integer('campaign_id').notNull(),
+  userId: integer('user_id').notNull(),
+  progressCount: integer('progress_count').notNull().default(0),
+  targetReached: boolean('target_reached').notNull().default(false),
+  targetReachedAt: timestamp('target_reached_at'),
+  rewardClaimed: boolean('reward_claimed').notNull().default(false),
+  rewardClaimedAt: timestamp('reward_claimed_at'),
+  joinedAt: timestamp('joined_at').defaultNow(),
+});
+
+export const campaignOrders = pgTable('campaign_orders', {
+  id: serial('id').primaryKey(),
+  campaignId: integer('campaign_id').notNull(),
+  userId: integer('user_id').notNull(),
+  orderId: integer('order_id').notNull(),
+  // counted | rejected
+  status: text('status').notNull().default('counted'),
+  deliveredAt: timestamp('delivered_at'),
+  countedAt: timestamp('counted_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const campaignRewards = pgTable('campaign_rewards', {
+  id: serial('id').primaryKey(),
+  campaignId: integer('campaign_id').notNull(),
+  userId: integer('user_id').notNull(),
+  rewardType: text('reward_type').notNull(),
+  // للمكافآت النقدية
+  cashAmount: real('cash_amount').notNull().default(0),
+  // للمكافآت من نوع كود
+  code: text('code'),
+  value: real('value').notNull().default(0),
+  appliesTo: text('applies_to').notNull().default('shipping'),
+  expiresAt: timestamp('expires_at'),
+  usedAt: timestamp('used_at'),
+  usedOrderId: integer('used_order_id'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 export const ordersRelations = relations(orders, ({ many }) => ({ items: many(orderItems) }));
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
@@ -144,6 +211,10 @@ export type Withdrawal = typeof withdrawals.$inferSelect;
 export type PromoCode = typeof promoCodes.$inferSelect;
 export type PromoUsage = typeof promoUsages.$inferSelect;
 export type Banner = typeof banners.$inferSelect;
+export type Campaign = typeof campaigns.$inferSelect;
+export type CampaignParticipant = typeof campaignParticipants.$inferSelect;
+export type CampaignOrder = typeof campaignOrders.$inferSelect;
+export type CampaignReward = typeof campaignRewards.$inferSelect;
 
 export const pushTokens = pgTable('push_tokens', {
   id: serial('id').primaryKey(),
