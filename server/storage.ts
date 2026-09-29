@@ -1,9 +1,9 @@
 import { db } from "./db";
-import { users, products, orders, orderItems, withdrawals, favorites } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { users, products, orders, orderItems, withdrawals, favorites, promoCodes, promoUsages } from "@shared/schema";
+import { eq, and, sql, desc } from "drizzle-orm";
 
 export const storage = {
-  // Users
+  // ── Users ──
   async getUser(id: number) {
     const result = await db.select().from(users).where(eq(users.id, id));
     return result[0];
@@ -17,7 +17,6 @@ export const storage = {
     return result[0];
   },
   async updateUser(id: number, data: any) {
-    // ✅ whitelist — فقط الحقول المسموحة تُحدَّث
     const ALLOWED: (keyof typeof data)[] = [
       'storeName', 'phone', 'address', 'password',
       'balance', 'pendingBalance', 'role', 'isActive', 'permissions',
@@ -34,15 +33,13 @@ export const storage = {
   },
   async getAllUsers() {
     const all = await db.select().from(users);
-    // ✅ إخفاء الباسورد من قائمة المستخدمين
     return all.map(({ password, ...safe }: any) => safe);
   },
-
   async deleteUser(id: number) {
     await db.delete(users).where(eq(users.id, id));
   },
 
-  // Products
+  // ── Products ──
   async getProducts() {
     return db.select().from(products);
   },
@@ -62,7 +59,7 @@ export const storage = {
     await db.delete(products).where(eq(products.id, id));
   },
 
-  // Orders
+  // ── Orders ──
   async getOrders(merchantId?: number) {
     const allOrders = merchantId
       ? await db.select().from(orders).where(eq(orders.merchantId, merchantId))
@@ -126,7 +123,7 @@ export const storage = {
     return result[0];
   },
 
-  // Withdrawals
+  // ── Withdrawals ──
   async getWithdrawals(merchantId?: number) {
     const result = merchantId
       ? await db.select().from(withdrawals).where(eq(withdrawals.merchantId, merchantId))
@@ -151,7 +148,7 @@ export const storage = {
     return result[0];
   },
 
-  // Favorites
+  // ── Favorites ──
   async getFavorites(userId: number) {
     return await db.select().from(favorites).where(eq(favorites.userId, userId));
   },
@@ -174,5 +171,103 @@ export const storage = {
   async isFavorite(userId: number, productId: number) {
     const result = await db.select().from(favorites).where(eq(favorites.userId, userId));
     return result.some(f => f.productId === productId);
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── Promo Codes (جديد) ──
+  // ═══════════════════════════════════════════════════════════════
+
+  async getPromoCodes() {
+    const all = await db.select().from(promoCodes).orderBy(desc(promoCodes.createdAt));
+    // حساب عدد المستخدمين لكل كود (اختياري — للأداء نتركها للـ endpoint)
+    return all;
+  },
+
+  async getPromoCode(id: number) {
+    const result = await db.select().from(promoCodes).where(eq(promoCodes.id, id));
+    return result[0] || null;
+  },
+
+  async getPromoCodeByCode(code: string) {
+    const result = await db.select().from(promoCodes)
+      .where(eq(promoCodes.code, code.toUpperCase()))
+      .limit(1);
+    return result[0] || null;
+  },
+
+  async createPromoCode(data: any) {
+    const result = await db.insert(promoCodes).values(data).returning();
+    return result[0];
+  },
+
+  async updatePromoCode(id: number, data: any) {
+    const updateData = { ...data, updatedAt: new Date() };
+    const result = await db.update(promoCodes).set(updateData)
+      .where(eq(promoCodes.id, id)).returning();
+    return result[0];
+  },
+
+  async deletePromoCode(id: number) {
+    // حذف سجلات الاستخدام المرتبطة
+    await db.delete(promoUsages).where(eq(promoUsages.promoId, id));
+    await db.delete(promoCodes).where(eq(promoCodes.id, id));
+  },
+
+  async incrementPromoUsedCount(id: number) {
+    await db.execute(
+      sql`UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ${id}`
+    );
+  },
+
+  async decrementPromoUsedCount(id: number) {
+    await db.execute(
+      sql`UPDATE promo_codes SET used_count = GREATEST(0, used_count - 1) WHERE id = ${id}`
+    );
+  },
+
+  // ── Promo Usages ──
+  async createPromoUsage(data: {
+    promoId: number;
+    userId: number;
+    orderId: number;
+    discountAmount: number;
+  }) {
+    const result = await db.insert(promoUsages).values(data).returning();
+    return result[0];
+  },
+
+  async getUserPromoUsageCount(promoId: number, userId: number) {
+    const result = await db.execute(
+      sql`SELECT COUNT(*) as count FROM promo_usages
+          WHERE promo_id = ${promoId} AND user_id = ${userId}`
+    );
+    return Number((result.rows[0] as any)?.count || 0);
+  },
+
+  async getPromoUsages(promoId: number) {
+    return await db.select().from(promoUsages)
+      .where(eq(promoUsages.promoId, promoId))
+      .orderBy(desc(promoUsages.createdAt));
+  },
+
+  async getPromoStats(promoId: number) {
+    const result = await db.execute(
+      sql`SELECT
+            COUNT(*) as usage_count,
+            COALESCE(SUM(discount_amount), 0) as total_discount,
+            COUNT(DISTINCT user_id) as unique_users
+          FROM promo_usages
+          WHERE promo_id = ${promoId}`
+    );
+    const row = result.rows[0] as any;
+    return {
+      usageCount: Number(row?.usage_count || 0),
+      totalDiscount: Number(row?.total_discount || 0),
+      uniqueUsers: Number(row?.unique_users || 0),
+    };
+  },
+
+  async deletePromoUsageByOrder(orderId: number) {
+    await db.delete(promoUsages).where(eq(promoUsages.orderId, orderId));
   },
 };
