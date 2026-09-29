@@ -37,6 +37,14 @@ import {
 import { eq, sql, and, desc } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
+// ── Campaigns Service ──
+import {
+  countOrderInCampaigns,
+  rejectOrderInCampaigns,
+  startCampaignCron,
+  distributeCampaignRewards,
+} from "./campaigns";
+
 // ── Rate Limiter ──
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 function rateLimit(maxRequests: number, windowMs: number) {
@@ -71,6 +79,7 @@ const hasPermission = (user: any, perm: string): boolean => {
 
 // ══════════════════════════════════════════════════════════════════
 // ── Promo Code Validation Helper ──
+// ✅ محدّث لدعم appliesTo = 'shipping'
 // ══════════════════════════════════════════════════════════════════
 interface PromoValidationResult {
   valid: boolean;
@@ -79,11 +88,18 @@ interface PromoValidationResult {
   promo?: any;
 }
 
+interface PromoContext {
+  cartAmount: number;    // مجموع المنتجات
+  shippingCost: number;  // كلفة التوصيل
+}
+
 async function validatePromoCode(
   code: string,
   userId: number,
-  cartAmount: number
+  context: PromoContext
 ): Promise<PromoValidationResult> {
+  const { cartAmount, shippingCost } = context;
+
   const promo = await storage.getPromoCodeByCode(code);
   if (!promo) {
     return { valid: false, error: 'الكود غير صحيح' };
@@ -140,10 +156,18 @@ async function validatePromoCode(
     }
   }
 
+  // ── تحديد أساس الحساب ──
+  const appliesTo = (promo as any).appliesTo || 'subtotal';
+  const baseAmount = appliesTo === 'shipping' ? shippingCost : cartAmount;
+
+  if (appliesTo === 'shipping' && shippingCost <= 0) {
+    return { valid: false, error: 'لا يوجد توصيل لتطبيق الخصم عليه' };
+  }
+
   // ── حساب الخصم ──
   let discount = 0;
   if (promo.discountType === 'percentage') {
-    discount = (cartAmount * promo.discountPercent) / 100;
+    discount = (baseAmount * promo.discountPercent) / 100;
   } else {
     discount = promo.discountAmount;
   }
@@ -153,8 +177,8 @@ async function validatePromoCode(
     discount = promo.maxDiscount;
   }
 
-  // لا يتجاوز الخصم قيمة السلة
-  discount = Math.min(discount, cartAmount);
+  // لا يتجاوز الخصم قيمة الأساس
+  discount = Math.min(discount, baseAmount);
   discount = Math.round(discount);
 
   return { valid: true, discount, promo };
@@ -248,6 +272,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS discount_type TEXT NOT NULL DEFAULT 'percentage'`);
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS discount_amount REAL NOT NULL DEFAULT 0`);
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS max_discount REAL NOT NULL DEFAULT 0`);
+    await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS applies_to TEXT NOT NULL DEFAULT 'subtotal'`);
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS target_type TEXT NOT NULL DEFAULT 'all'`);
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS target_user_ids TEXT NOT NULL DEFAULT ''`);
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS min_cart_amount REAL NOT NULL DEFAULT 0`);
@@ -271,6 +296,76 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     )`);
     console.log('✅ promo_usages migration done');
   } catch (e) { console.log('promo_usages migration note:', e); }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Campaigns Migrations ──
+  // ══════════════════════════════════════════════════════════════════
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS campaigns (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      product_id INTEGER NOT NULL,
+      target_count INTEGER NOT NULL,
+      starts_at TIMESTAMP NOT NULL,
+      ends_at TIMESTAMP NOT NULL,
+      reward_type TEXT NOT NULL,
+      reward_value REAL NOT NULL DEFAULT 0,
+      reward_data TEXT NOT NULL DEFAULT '{}',
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      is_distributed BOOLEAN NOT NULL DEFAULT FALSE,
+      distributed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ campaigns migration done');
+  } catch (e) { console.log('campaigns migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS campaign_participants (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      progress_count INTEGER NOT NULL DEFAULT 0,
+      target_reached BOOLEAN NOT NULL DEFAULT FALSE,
+      target_reached_at TIMESTAMP,
+      reward_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+      reward_claimed_at TIMESTAMP,
+      joined_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ campaign_participants migration done');
+  } catch (e) { console.log('campaign_participants migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS campaign_orders (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'counted',
+      delivered_at TIMESTAMP,
+      counted_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ campaign_orders migration done');
+  } catch (e) { console.log('campaign_orders migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS campaign_rewards (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      reward_type TEXT NOT NULL,
+      cash_amount REAL NOT NULL DEFAULT 0,
+      code TEXT,
+      value REAL NOT NULL DEFAULT 0,
+      applies_to TEXT NOT NULL DEFAULT 'shipping',
+      expires_at TIMESTAMP,
+      used_at TIMESTAMP,
+      used_order_id INTEGER,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ campaign_rewards migration done');
+  } catch (e) { console.log('campaign_rewards migration note:', e); }
 
   // ══════════════════════════════════════════════════════════════════
   // ── Products ──
@@ -371,6 +466,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ══════════════════════════════════════════════════════════════════
   // ── POST /api/orders ──
   // ✅ الخصم يُحمّل على الشركة (من هامش سعر الجملة) — التاجر لا يتأثر
+  // ✅ دعم appliesTo = 'shipping' (خصم على التوصيل)
   // ══════════════════════════════════════════════════════════════════
   app.post("/api/orders", requireAuth, generalLimiter, async (req: any, res) => {
     try {
@@ -407,10 +503,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // ── ربح الشركة الأساسي (هامش سعر الجملة قبل الخصم) ──
       const companyMarginBeforeDiscount = totalCost - totalCompanyCost;
 
+      // ── التوصيل (يُحسب قبل التحقق من الكود لأن خصم التوصيل يحتاجه) ──
+      const isBasra = province.includes("البصرة");
+      const shippingCost = isBasra ? 3000 : 5000;
+      const rawSubsidy = Number(req.body.shippingSubsidy || 0);
+      const shippingSubsidy = Math.max(0, Math.min(rawSubsidy, shippingCost));
+      const baseCustomerShipping = shippingCost - shippingSubsidy;
+
       // ═══════════════════════════════════════════════════════════
       // ── تطبيق الخصم ──
       // ═══════════════════════════════════════════════════════════
-      let promoDiscount = 0;
+      let productsDiscount = 0;   // خصم المنتجات
+      let shippingDiscount = 0;   // خصم التوصيل
       let validPromo = "";
       let appliedPromo: any = null;
 
@@ -418,43 +522,42 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         const result = await validatePromoCode(
           promoCode.trim().toUpperCase(),
           req.user.id,
-          totalAmount
+          { cartAmount: totalAmount, shippingCost: baseCustomerShipping }
         );
 
         if (!result.valid) {
           return res.status(400).json({ message: result.error });
         }
 
-        promoDiscount = result.discount || 0;
+        const appliesTo = result.promo.appliesTo || 'subtotal';
+        if (appliesTo === 'shipping') {
+          shippingDiscount = result.discount || 0;
+        } else {
+          productsDiscount = result.discount || 0;
+        }
         validPromo = result.promo.code;
         appliedPromo = result.promo;
       }
 
-      // ── 🛡️ حماية: منع الخصم من تجاوز هامش ربح الشركة ──
-      if (promoDiscount > companyMarginBeforeDiscount) {
+      // ── 🛡️ حماية: منع خصم المنتجات من تجاوز هامش ربح الشركة ──
+      if (productsDiscount > companyMarginBeforeDiscount) {
         return res.status(400).json({
-          message: `قيمة الخصم (${promoDiscount.toLocaleString()} د.ع) تتجاوز الحد المتاح لهذا الطلب. الحد الأقصى: ${companyMarginBeforeDiscount.toLocaleString()} د.ع`,
+          message: `قيمة الخصم (${productsDiscount.toLocaleString()} د.ع) تتجاوز الحد المتاح لهذا الطلب. الحد الأقصى: ${companyMarginBeforeDiscount.toLocaleString()} د.ع`,
         });
       }
 
-      // ── التوصيل ──
-      const isBasra = province.includes("البصرة");
-      const shippingCost = isBasra ? 3000 : 5000;
-      const rawSubsidy = Number(req.body.shippingSubsidy || 0);
-      const shippingSubsidy = Math.max(0, Math.min(rawSubsidy, shippingCost));
-      const customerShipping = shippingCost - shippingSubsidy;
+      // ── الحسابات المالية النهائية ──
+      const totalPromoDiscount = productsDiscount + shippingDiscount;
+      const customerShipping = Math.max(0, baseCustomerShipping - shippingDiscount);
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // ✅ الحسابات المالية الجديدة
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       // ربح التاجر: لا يتأثر بالخصم (فقط بالسلايدر)
       const totalProfit = totalAmount - totalCost - shippingSubsidy;
 
-      // ربح الشركة: يُخصم منه الكود
-      const companyProfit = companyMarginBeforeDiscount - promoDiscount;
+      // ربح الشركة: يُخصم منه الكود (منتجات + توصيل)
+      const companyProfit = companyMarginBeforeDiscount - productsDiscount - shippingDiscount;
 
-      // المبلغ الإجمالي للعميل: يقل بمقدار الخصم
-      const finalAmount = totalAmount + customerShipping - promoDiscount;
+      // المبلغ الإجمالي للعميل
+      const finalAmount = totalAmount + customerShipping - productsDiscount;
 
       // ── إنشاء الطلب ──
       const order = await storage.createOrder({
@@ -468,7 +571,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         totalProfit,
         companyProfit,
         promoCode: validPromo,
-        promoDiscount,
+        promoDiscount: totalPromoDiscount,
       }, enrichedItems);
 
       // ── تسجيل استخدام الكود ──
@@ -478,7 +581,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             promoId: appliedPromo.id,
             userId: req.user.id,
             orderId: order.id,
-            discountAmount: promoDiscount,
+            discountAmount: totalPromoDiscount,
           });
           await storage.incrementPromoUsedCount(appliedPromo.id);
         } catch (err) {
@@ -546,6 +649,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ── تحديث حالة الطلب ──
+  // ✅ ربط مع نظام الحملات (countOrderInCampaigns / rejectOrderInCampaigns)
   app.patch("/api/orders/:id/status", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin" && req.user.role !== "merchant") {
       return res.status(403).json({ message: "غير مصرح" });
@@ -628,6 +732,24 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             await storage.deletePromoUsageByOrder(order.id);
           }
         } catch (_) {}
+      }
+
+      // ── 🎯 ربط مع نظام الحملات ──
+      try {
+        // عند التسليم → احتساب فوري
+        if (newIsBalance && !oldWasBalance) {
+          await countOrderInCampaigns(order.id);
+        }
+        // عند الإلغاء/الرفض → إزالة من الحملات
+        if (newIsLoss && !oldWasLoss) {
+          await rejectOrderInCampaigns(order.id);
+        }
+        // عند العودة من إلغاء → إعادة احتساب
+        if (oldWasLoss && !newIsLoss) {
+          await countOrderInCampaigns(order.id);
+        }
+      } catch (err) {
+        console.error('Campaign sync error:', err);
       }
 
       const STATUS_LABELS: Record<string, string> = {
@@ -718,6 +840,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           }
         } catch (_) {}
       }
+
+      // ✅ إزالة الطلب من الحملات
+      try {
+        await rejectOrderInCampaigns(orderId);
+      } catch (_) {}
 
       await db.delete(orderItems).where(eq(orderItems.orderId, orderId));
       await db.delete(orders).where(eq(orders.id, orderId));
@@ -922,7 +1049,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const {
         code, title, description, discountType, discountPercent, discountAmount,
-        maxDiscount, targetType, targetUserIds, minCartAmount,
+        maxDiscount, appliesTo, targetType, targetUserIds, minCartAmount,
         startsAt, expiresAt, maxUses, maxUsesPerUser, isActive
       } = req.body;
 
@@ -938,6 +1065,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           return res.status(400).json({ message: 'مبلغ الخصم يجب أن يكون أكبر من صفر' });
       }
 
+      const scope = appliesTo === 'shipping' ? 'shipping' : 'subtotal';
+
       const result = await storage.createPromoCode({
         code: code.trim().toUpperCase(),
         title: title.trim(),
@@ -946,6 +1075,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         discountPercent: type === 'percentage' ? Number(discountPercent) : 0,
         discountAmount: type === 'fixed' ? Number(discountAmount) : 0,
         maxDiscount: Number(maxDiscount) || 0,
+        appliesTo: scope,
         targetType: targetType === 'specific' ? 'specific' : 'all',
         targetUserIds: (targetUserIds || '').toString().trim(),
         minCartAmount: Number(minCartAmount) || 0,
@@ -954,7 +1084,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         maxUses: Number(maxUses) || 0,
         maxUsesPerUser: Number(maxUsesPerUser) || 1,
         isActive: isActive !== false,
-      });
+      } as any);
       res.status(201).json(result);
     } catch (e: any) {
       if (e.message?.includes('unique') || e.message?.includes('duplicate')) {
@@ -974,7 +1104,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const {
         code, title, description, discountType, discountPercent, discountAmount,
-        maxDiscount, targetType, targetUserIds, minCartAmount,
+        maxDiscount, appliesTo, targetType, targetUserIds, minCartAmount,
         startsAt, expiresAt, maxUses, maxUsesPerUser, isActive
       } = req.body;
 
@@ -986,6 +1116,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (discountPercent !== undefined) updateData.discountPercent = Number(discountPercent);
       if (discountAmount !== undefined) updateData.discountAmount = Number(discountAmount);
       if (maxDiscount !== undefined) updateData.maxDiscount = Number(maxDiscount);
+      if (appliesTo !== undefined) updateData.appliesTo = appliesTo === 'shipping' ? 'shipping' : 'subtotal';
       if (targetType !== undefined) updateData.targetType = targetType === 'specific' ? 'specific' : 'all';
       if (targetUserIds !== undefined) updateData.targetUserIds = (targetUserIds || '').toString().trim();
       if (minCartAmount !== undefined) updateData.minCartAmount = Number(minCartAmount);
@@ -1016,7 +1147,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.post("/api/promo-codes/verify", requireAuth, generalLimiter, async (req: any, res) => {
     try {
-      const { code, cartAmount } = req.body;
+      const { code, cartAmount, shippingCost } = req.body;
       if (!code || !code.trim()) {
         return res.status(400).json({ valid: false, message: 'أدخل كود الخصم' });
       }
@@ -1027,7 +1158,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const result = await validatePromoCode(
         code.trim().toUpperCase(),
         req.user.id,
-        Number(cartAmount)
+        {
+          cartAmount: Number(cartAmount),
+          shippingCost: Number(shippingCost) || 0,
+        }
       );
 
       if (!result.valid) {
@@ -1044,6 +1178,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           discountType: result.promo.discountType,
           discountPercent: result.promo.discountPercent,
           discountAmount: result.promo.discountAmount,
+          appliesTo: result.promo.appliesTo || 'subtotal',
         },
       });
     } catch (e: any) {
@@ -1064,6 +1199,187 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }));
       res.json({ stats, usages: usagesWithNames });
     } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Campaigns (الحملات) ──
+  // ══════════════════════════════════════════════════════════════════
+
+  // ─── للأدمن: قائمة الحملات ───
+  app.get("/api/admin/campaigns", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const list = await storage.getCampaigns();
+      res.json(list);
+    } catch (e: any) {
+      console.error('Error getting campaigns:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: تفاصيل حملة + مشاركين + إحصائيات ───
+  app.get("/api/admin/campaigns/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const id = Number(req.params.id);
+      const campaign = await storage.getCampaign(id);
+      if (!campaign) return res.status(404).json({ message: 'الحملة غير موجودة' });
+
+      const participants = await storage.getCampaignParticipants(id);
+      const stats = await storage.getCampaignStats(id);
+
+      res.json({ ...campaign, participants, stats });
+    } catch (e: any) {
+      console.error('Error getting campaign details:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: إنشاء حملة ───
+  app.post("/api/admin/campaigns", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const {
+        title, description, productId, targetCount,
+        startsAt, endsAt, rewardType, rewardValue, rewardData,
+      } = req.body;
+
+      if (!validateString(title, 200))
+        return res.status(400).json({ message: 'عنوان الحملة مطلوب' });
+      if (!productId)
+        return res.status(400).json({ message: 'المنتج مطلوب' });
+      if (!targetCount || Number(targetCount) <= 0)
+        return res.status(400).json({ message: 'الهدف يجب أن يكون أكبر من صفر' });
+      if (!startsAt || !endsAt)
+        return res.status(400).json({ message: 'تاريخ البداية والنهاية مطلوبان' });
+
+      const startDate = new Date(startsAt);
+      const endDate = new Date(endsAt);
+      if (endDate <= startDate)
+        return res.status(400).json({ message: 'تاريخ النهاية يجب أن يكون بعد البداية' });
+
+      const VALID_REWARD_TYPES = ['cashback', 'shipping_code', 'product_code', 'free_shipping'];
+      if (!VALID_REWARD_TYPES.includes(rewardType))
+        return res.status(400).json({ message: 'نوع المكافأة غير صحيح' });
+
+      // التحقق من وجود المنتج
+      const product = await storage.getProduct(Number(productId));
+      if (!product) return res.status(404).json({ message: 'المنتج غير موجود' });
+
+      const result = await storage.createCampaign({
+        title: title.trim(),
+        description: (description || '').trim(),
+        productId: Number(productId),
+        targetCount: Number(targetCount),
+        startsAt: startDate,
+        endsAt: endDate,
+        rewardType,
+        rewardValue: Number(rewardValue) || 0,
+        rewardData: typeof rewardData === 'string' ? rewardData : JSON.stringify(rewardData || {}),
+        isActive: true,
+      } as any);
+
+      res.status(201).json(result);
+    } catch (e: any) {
+      console.error('Create campaign error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: تعديل حملة ───
+  app.patch("/api/admin/campaigns/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const id = Number(req.params.id);
+      const campaign = await storage.getCampaign(id);
+      if (!campaign) return res.status(404).json({ message: 'الحملة غير موجودة' });
+
+      const {
+        title, description, productId, targetCount,
+        startsAt, endsAt, rewardType, rewardValue, rewardData, isActive,
+      } = req.body;
+
+      const updateData: any = {};
+      if (title !== undefined) updateData.title = title.trim();
+      if (description !== undefined) updateData.description = description.trim();
+      if (productId !== undefined) updateData.productId = Number(productId);
+      if (targetCount !== undefined) updateData.targetCount = Number(targetCount);
+      if (startsAt !== undefined) updateData.startsAt = new Date(startsAt);
+      if (endsAt !== undefined) updateData.endsAt = new Date(endsAt);
+      if (rewardType !== undefined) updateData.rewardType = rewardType;
+      if (rewardValue !== undefined) updateData.rewardValue = Number(rewardValue);
+      if (rewardData !== undefined) {
+        updateData.rewardData = typeof rewardData === 'string' ? rewardData : JSON.stringify(rewardData);
+      }
+      if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
+      const result = await storage.updateCampaign(id, updateData);
+      res.json(result);
+    } catch (e: any) {
+      console.error('Update campaign error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: حذف حملة ───
+  app.delete("/api/admin/campaigns/:id", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      await storage.deleteCampaign(Number(req.params.id));
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Delete campaign error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: إحصائيات حملة ───
+  app.get("/api/admin/campaigns/:id/stats", requireAuth, async (req: any, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const stats = await storage.getCampaignStats(Number(req.params.id));
+      res.json(stats);
+    } catch (e: any) {
+      console.error('Campaign stats error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للتاجر: حملاتي ───
+  app.get("/api/campaigns/my", requireAuth, async (req: any, res) => {
+    try {
+      const list = await storage.getUserCampaigns(req.user.id);
+      res.json(list);
+    } catch (e: any) {
+      console.error('Error getting my campaigns:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للتاجر: تفاصيل حملة + تقدمي ───
+  app.get("/api/campaigns/:id", requireAuth, async (req: any, res) => {
+    try {
+      const data = await storage.getCampaignWithProgress(
+        Number(req.params.id),
+        req.user.id
+      );
+      if (!data) return res.status(404).json({ message: 'الحملة غير موجودة' });
+      res.json(data);
+    } catch (e: any) {
+      console.error('Error getting campaign:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للتاجر: مكافآتي ───
+  app.get("/api/campaigns/rewards/my", requireAuth, async (req: any, res) => {
+    try {
+      const rewards = await storage.getUserCampaignRewards(req.user.id);
+      res.json(rewards);
+    } catch (e: any) {
+      console.error('Error getting my rewards:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -1367,7 +1683,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ══════════════════════════════════════════════════════════════════
   // ── Stats ──
-  // ✅ تم تحديث الحسابات لتتماشى مع المنطق الجديد (الشركة تتحمل الخصم)
   // ══════════════════════════════════════════════════════════════════
   app.get("/api/admin/stats-data", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
@@ -1389,9 +1704,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             return sum + ((p.companyWholesalePrice || 0) * (item.quantity || 1));
           }, 0) || 0;
 
-          // ✅ التاجر لا يتحمل الخصم
           order.totalProfit = itemsTotal - totalCost;
-          // ✅ الشركة تتحمل الخصم من هامش سعر الجملة
           order.companyProfit = (totalCost - totalCompanyCost) - promoDiscount;
         }
         return order;
@@ -1427,7 +1740,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         };
       });
 
-      // ✅ إجمالي الخصومات الممنوحة (للعرض في الإحصائيات)
       const totalPromoDiscounts = ordersData.reduce(
         (sum: number, o: any) => sum + (o.promoDiscount || 0),
         0
@@ -1445,7 +1757,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           totalMerchants: merchants.length,
           totalProducts: productsData.length,
           totalWithdrawals: withdrawalsData.length,
-          totalPromoDiscounts, // ✅ جديد
+          totalPromoDiscounts,
         },
       });
     } catch (error: any) {
@@ -1674,6 +1986,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.json({ total, outOfStock, lowStock, stale, totalValue });
     } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Start Campaign Cron Jobs ──
+  // ══════════════════════════════════════════════════════════════════
+  try {
+    startCampaignCron();
+    console.log('✅ Campaign cron jobs started');
+  } catch (e) {
+    console.error('Failed to start campaign cron:', e);
+  }
 
   return httpServer;
 }
