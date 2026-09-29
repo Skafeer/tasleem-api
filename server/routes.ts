@@ -240,7 +240,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   } catch (e) { console.log('Support updates migration note:', e); }
 
   // ══════════════════════════════════════════════════════════════════
-  // ── Promo Codes Migrations (NEW) ──
+  // ── Promo Codes Migrations ──
   // ══════════════════════════════════════════════════════════════════
   try {
     await db.execute(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`);
@@ -369,7 +369,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ══════════════════════════════════════════════════════════════════
-  // ── POST /api/orders (محدّث بالكامل مع منطق الخصومات الجديد) ──
+  // ── POST /api/orders ──
+  // ✅ الخصم يُحمّل على الشركة (من هامش سعر الجملة) — التاجر لا يتأثر
   // ══════════════════════════════════════════════════════════════════
   app.post("/api/orders", requireAuth, generalLimiter, async (req: any, res) => {
     try {
@@ -403,8 +404,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return { productId: Number(item.productId), quantity: qty, price, cost: product.wholesalePrice };
       }));
 
+      // ── ربح الشركة الأساسي (هامش سعر الجملة قبل الخصم) ──
+      const companyMarginBeforeDiscount = totalCost - totalCompanyCost;
+
       // ═══════════════════════════════════════════════════════════
-      // ── تطبيق الخصم (المنطق الجديد) ──
+      // ── تطبيق الخصم ──
       // ═══════════════════════════════════════════════════════════
       let promoDiscount = 0;
       let validPromo = "";
@@ -426,6 +430,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         appliedPromo = result.promo;
       }
 
+      // ── 🛡️ حماية: منع الخصم من تجاوز هامش ربح الشركة ──
+      if (promoDiscount > companyMarginBeforeDiscount) {
+        return res.status(400).json({
+          message: `قيمة الخصم (${promoDiscount.toLocaleString()} د.ع) تتجاوز الحد المتاح لهذا الطلب. الحد الأقصى: ${companyMarginBeforeDiscount.toLocaleString()} د.ع`,
+        });
+      }
+
       // ── التوصيل ──
       const isBasra = province.includes("البصرة");
       const shippingCost = isBasra ? 3000 : 5000;
@@ -433,8 +444,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const shippingSubsidy = Math.max(0, Math.min(rawSubsidy, shippingCost));
       const customerShipping = shippingCost - shippingSubsidy;
 
-      const totalProfit = totalAmount - totalCost - promoDiscount - shippingSubsidy;
-      const companyProfit = totalCost - totalCompanyCost;
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // ✅ الحسابات المالية الجديدة
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // ربح التاجر: لا يتأثر بالخصم (فقط بالسلايدر)
+      const totalProfit = totalAmount - totalCost - shippingSubsidy;
+
+      // ربح الشركة: يُخصم منه الكود
+      const companyProfit = companyMarginBeforeDiscount - promoDiscount;
+
+      // المبلغ الإجمالي للعميل: يقل بمقدار الخصم
       const finalAmount = totalAmount + customerShipping - promoDiscount;
 
       // ── إنشاء الطلب ──
@@ -637,7 +656,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── Edit Order ──
+  // ── Edit Order (Admin) ──
   app.put("/api/orders/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
@@ -654,7 +673,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (notes !== undefined) updateData.notes = notes;
       if (items && Array.isArray(items)) {
         await db.delete(orderItems).where(eq(orderItems.orderId, orderId));
-        let totalAmount = 0, totalCost = 0;
+        let totalAmount = 0, totalCost = 0, totalCompanyCost = 0;
         const enriched = await Promise.all(items.map(async (item: any) => {
           const product = await storage.getProduct(Number(item.productId));
           if (!product) throw new Error("منتج غير موجود");
@@ -662,13 +681,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           const price = Number(item.price);
           totalAmount += price * qty;
           totalCost += product.wholesalePrice * qty;
+          totalCompanyCost += (product.companyWholesalePrice || 0) * qty;
           return { orderId, productId: Number(item.productId), quantity: qty, price, cost: product.wholesalePrice };
         }));
         await db.insert(orderItems).values(enriched);
         const shippingCost = order.shippingCost || 5000;
         const promoDiscount = order.promoDiscount || 0;
+        const companyMarginBeforeDiscount = totalCost - totalCompanyCost;
+
         updateData.totalAmount = totalAmount + shippingCost - promoDiscount;
-        updateData.totalProfit = totalAmount - totalCost - promoDiscount;
+        // ✅ التاجر لا يتحمل الخصم
+        updateData.totalProfit = totalAmount - totalCost;
+        // ✅ الشركة تتحمل الخصم
+        updateData.companyProfit = companyMarginBeforeDiscount - promoDiscount;
       }
       await storage.updateOrder(orderId, updateData);
       const fresh = await storage.getOrder(orderId);
@@ -684,7 +709,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ message: "الطلب غير موجود" });
 
-      // إرجاع عداد الكود لو كان مستخدماً
       if (order.promoCode) {
         try {
           const promo = await storage.getPromoCodeByCode(order.promoCode);
@@ -871,15 +895,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ══════════════════════════════════════════════════════════════════
-  // ── Promo Codes Routes (محدّثة بالكامل) ──
+  // ── Promo Codes Routes ──
   // ══════════════════════════════════════════════════════════════════
 
-  // ── GET /api/promo-codes (للأدمن) ──
   app.get("/api/promo-codes", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
       const codes = await storage.getPromoCodes();
-      // جلب إحصائيات لكل كود
       const codesWithStats = await Promise.all(codes.map(async (c: any) => {
         try {
           const stats = await storage.getPromoStats(c.id);
@@ -895,7 +917,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── POST /api/promo-codes ──
   app.post("/api/promo-codes", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
@@ -944,7 +965,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── PATCH /api/promo-codes/:id ──
   app.patch("/api/promo-codes/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
@@ -986,7 +1006,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── DELETE /api/promo-codes/:id ──
   app.delete("/api/promo-codes/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
@@ -995,7 +1014,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
-  // ── POST /api/promo-codes/verify (للتاجر) ──
   app.post("/api/promo-codes/verify", requireAuth, generalLimiter, async (req: any, res) => {
     try {
       const { code, cartAmount } = req.body;
@@ -1034,14 +1052,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── GET /api/promo-codes/stats/:id (للأدمن) ──
   app.get("/api/promo-codes/stats/:id", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
     try {
       const id = Number(req.params.id);
       const stats = await storage.getPromoStats(id);
       const usages = await storage.getPromoUsages(id);
-      // جلب أسماء التجار
       const usagesWithNames = await Promise.all(usages.map(async (u: any) => {
         const user = await storage.getUser(u.userId);
         return { ...u, storeName: user?.storeName || `#${u.userId}` };
@@ -1351,6 +1367,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ══════════════════════════════════════════════════════════════════
   // ── Stats ──
+  // ✅ تم تحديث الحسابات لتتماشى مع المنطق الجديد (الشركة تتحمل الخصم)
   // ══════════════════════════════════════════════════════════════════
   app.get("/api/admin/stats-data", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
@@ -1365,11 +1382,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const ordersWithProfit = ordersData.map((order: any) => {
         if (order.totalProfit === undefined || order.totalProfit === null) {
           const itemsTotal = order.items?.reduce((sum: number, item: any) => sum + ((item.price || 0) * (item.quantity || 1)), 0) || 0;
-          const shippingCost = order.shippingCost || 0;
           const promoDiscount = order.promoDiscount || 0;
           const totalCost = order.items?.reduce((sum: number, item: any) => sum + ((item.cost || 0) * (item.quantity || 1)), 0) || 0;
-          order.totalProfit = itemsTotal - totalCost - promoDiscount;
-          order.companyProfit = totalCost - (order.companyWholesalePrice || totalCost);
+          const totalCompanyCost = order.items?.reduce((sum: number, item: any) => {
+            const p = item.product || {};
+            return sum + ((p.companyWholesalePrice || 0) * (item.quantity || 1));
+          }, 0) || 0;
+
+          // ✅ التاجر لا يتحمل الخصم
+          order.totalProfit = itemsTotal - totalCost;
+          // ✅ الشركة تتحمل الخصم من هامش سعر الجملة
+          order.companyProfit = (totalCost - totalCompanyCost) - promoDiscount;
         }
         return order;
       });
@@ -1404,6 +1427,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         };
       });
 
+      // ✅ إجمالي الخصومات الممنوحة (للعرض في الإحصائيات)
+      const totalPromoDiscounts = ordersData.reduce(
+        (sum: number, o: any) => sum + (o.promoDiscount || 0),
+        0
+      );
+
       res.json({
         orders: ordersWithProfit,
         users: usersData,
@@ -1416,6 +1445,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           totalMerchants: merchants.length,
           totalProducts: productsData.length,
           totalWithdrawals: withdrawalsData.length,
+          totalPromoDiscounts, // ✅ جديد
         },
       });
     } catch (error: any) {
