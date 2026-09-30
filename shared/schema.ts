@@ -51,6 +51,7 @@ export const orders = pgTable("orders", {
   totalProfit: real("total_profit").notNull().default(0),
   promoCode: text("promo_code").notNull().default(""),
   promoDiscount: real("promo_discount").notNull().default(0),
+  deliveredAt: timestamp("delivered_at"), // ✅ وقت التسليم الفعلي (للحملات)
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -74,7 +75,7 @@ export const withdrawals = pgTable("withdrawals", {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// ── Promo Codes (محدّث بالكامل) ──
+// ── Promo Codes ──
 // ══════════════════════════════════════════════════════════════════
 export const promoCodes = pgTable("promo_codes", {
   id: serial("id").primaryKey(),
@@ -82,30 +83,22 @@ export const promoCodes = pgTable("promo_codes", {
   title: text("title").notNull().default(""),
   description: text("description").notNull().default(""),
 
-  // ── نوع الخصم ──
-  // 'percentage' = نسبة مئوية | 'fixed' = مبلغ ثابت
   discountType: text("discount_type").notNull().default("percentage"),
-  discountPercent: real("discount_percent").notNull().default(0),   // للنسبة
-  discountAmount: real("discount_amount").notNull().default(0),     // للمبلغ الثابت
-  maxDiscount: real("max_discount").notNull().default(0),           // 0 = بلا سقف
+  discountPercent: real("discount_percent").notNull().default(0),
+  discountAmount: real("discount_amount").notNull().default(0),
+  maxDiscount: real("max_discount").notNull().default(0),
 
-  // ── نطاق التطبيق ──
-  // 'subtotal' = على المنتجات | 'shipping' = على التوصيل
   appliesTo: text("applies_to").notNull().default("subtotal"),
 
-  // ── النطاق ──
-  // 'all' = جميع التجار | 'specific' = تجار محددون
   targetType: text("target_type").notNull().default("all"),
-  targetUserIds: text("target_user_ids").notNull().default(""),     // CSV: "1,2,3"
+  targetUserIds: text("target_user_ids").notNull().default(""),
 
-  // ── الشروط ──
-  minCartAmount: real("min_cart_amount").notNull().default(0),      // 0 = بلا حد أدنى
+  minCartAmount: real("min_cart_amount").notNull().default(0),
   startsAt: timestamp("starts_at"),
   expiresAt: timestamp("expires_at"),
 
-  // ── الاستخدام ──
-  maxUses: integer("max_uses").notNull().default(0),                // 0 = بلا حد
-  maxUsesPerUser: integer("max_uses_per_user").notNull().default(1),// لكل تاجر
+  maxUses: integer("max_uses").notNull().default(0),
+  maxUsesPerUser: integer("max_uses_per_user").notNull().default(1),
   usedCount: integer("used_count").notNull().default(0),
 
   isActive: boolean("is_active").notNull().default(true),
@@ -113,7 +106,6 @@ export const promoCodes = pgTable("promo_codes", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-// ── تتبع استخدام الأكواد ──
 export const promoUsages = pgTable("promo_usages", {
   id: serial("id").primaryKey(),
   promoId: integer("promo_id").notNull(),
@@ -134,7 +126,7 @@ export const banners = pgTable('banners', {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// ── Campaigns (الحملات / التحديات) ──
+// ── Campaigns ──
 // ══════════════════════════════════════════════════════════════════
 export const campaigns = pgTable('campaigns', {
   id: serial('id').primaryKey(),
@@ -144,10 +136,8 @@ export const campaigns = pgTable('campaigns', {
   targetCount: integer('target_count').notNull(),
   startsAt: timestamp('starts_at').notNull(),
   endsAt: timestamp('ends_at').notNull(),
-  // cashback | shipping_code | product_code | free_shipping
   rewardType: text('reward_type').notNull(),
   rewardValue: real('reward_value').notNull().default(0),
-  // JSON: { codePrefix?, expiresInDays?, maxDiscount? }
   rewardData: text('reward_data').notNull().default('{}'),
   isActive: boolean('is_active').notNull().default(true),
   isDistributed: boolean('is_distributed').notNull().default(false),
@@ -172,7 +162,6 @@ export const campaignOrders = pgTable('campaign_orders', {
   campaignId: integer('campaign_id').notNull(),
   userId: integer('user_id').notNull(),
   orderId: integer('order_id').notNull(),
-  // counted | rejected
   status: text('status').notNull().default('counted'),
   deliveredAt: timestamp('delivered_at'),
   countedAt: timestamp('counted_at'),
@@ -184,9 +173,7 @@ export const campaignRewards = pgTable('campaign_rewards', {
   campaignId: integer('campaign_id').notNull(),
   userId: integer('user_id').notNull(),
   rewardType: text('reward_type').notNull(),
-  // للمكافآت النقدية
   cashAmount: real('cash_amount').notNull().default(0),
-  // للمكافآت من نوع كود
   code: text('code'),
   value: real('value').notNull().default(0),
   appliesTo: text('applies_to').notNull().default('shipping'),
