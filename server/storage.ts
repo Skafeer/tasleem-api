@@ -3,6 +3,7 @@ import {
   users, products, orders, orderItems, withdrawals, favorites,
   promoCodes, promoUsages,
   campaigns, campaignParticipants, campaignOrders, campaignRewards,
+  stores, storeProducts,
 } from "@shared/schema";
 import { eq, and, sql, desc, inArray, gte, lte } from "drizzle-orm";
 
@@ -277,11 +278,9 @@ export const storage = {
   // ── Campaigns (الحملات / التحديات) ──
   // ═══════════════════════════════════════════════════════════════
 
-  // ── CRUD أساسي ──
   async getCampaigns() {
     const list = await db.select().from(campaigns)
       .orderBy(desc(campaigns.createdAt));
-    // إضافة معلومات المنتج لكل حملة
     return await Promise.all(list.map(async (c: any) => {
       const product = await db.select().from(products)
         .where(eq(products.id, c.productId)).limit(1);
@@ -313,20 +312,17 @@ export const storage = {
   },
 
   async deleteCampaign(id: number) {
-    // حذف كل البيانات المرتبطة
     await db.delete(campaignRewards).where(eq(campaignRewards.campaignId, id));
     await db.delete(campaignOrders).where(eq(campaignOrders.campaignId, id));
     await db.delete(campaignParticipants).where(eq(campaignParticipants.campaignId, id));
     await db.delete(campaigns).where(eq(campaigns.id, id));
   },
 
-  // ── للمشاركين ──
   async getCampaignParticipants(campaignId: number) {
     const participants = await db.select().from(campaignParticipants)
       .where(eq(campaignParticipants.campaignId, campaignId))
       .orderBy(desc(campaignParticipants.progressCount));
 
-    // إضافة اسم المتجر لكل مشارك
     return await Promise.all(participants.map(async (p: any) => {
       const user = await db.select({
         id: users.id,
@@ -358,11 +354,9 @@ export const storage = {
     return result[0];
   },
 
-  // ── للتاجر: كل حملاته مع تفاصيل التقدم ──
   async getUserCampaigns(userId: number) {
     const now = new Date();
 
-    // كل الحملات النشطة (يشارك فيها أو لا)
     const allCampaigns = await db.select().from(campaigns)
       .orderBy(desc(campaigns.createdAt));
 
@@ -396,7 +390,6 @@ export const storage = {
     }));
   },
 
-  // ── للتفاصيل: الحملة + التقدم + المكافآت المصروفة ──
   async getCampaignWithProgress(campaignId: number, userId: number) {
     const campaign = await storage.getCampaign(campaignId);
     if (!campaign) return null;
@@ -425,13 +418,11 @@ export const storage = {
     };
   },
 
-  // ── مكافآت المستخدم ──
   async getUserCampaignRewards(userId: number) {
     const rewards = await db.select().from(campaignRewards)
       .where(eq(campaignRewards.userId, userId))
       .orderBy(desc(campaignRewards.createdAt));
 
-    // إضافة معلومات الحملة
     return await Promise.all(rewards.map(async (r: any) => {
       const campaign = await db.select({
         id: campaigns.id,
@@ -442,7 +433,6 @@ export const storage = {
     }));
   },
 
-  // ── Campaign Orders (السجل) ──
   async getCampaignOrders(campaignId: number, userId?: number) {
     let query = db.select().from(campaignOrders)
       .where(eq(campaignOrders.campaignId, campaignId));
@@ -470,7 +460,6 @@ export const storage = {
     return result[0];
   },
 
-  // ── إحصائيات الحملة (للأدمن) ──
   async getCampaignStats(campaignId: number) {
     const result = await db.execute(sql`
       SELECT
@@ -493,6 +482,212 @@ export const storage = {
       countedOrders: Number(row?.counted_orders || 0),
       rejectedOrders: Number(row?.rejected_orders || 0),
       winnersCount: Number((winners.rows[0] as any)?.count || 0),
+    };
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── Stores (المتاجر الإلكترونية) ──
+  // ═══════════════════════════════════════════════════════════════
+
+  // ── CRUD المتجر ──
+  async getStore(id: number) {
+    const result = await db.select().from(stores).where(eq(stores.id, id)).limit(1);
+    return result[0] || null;
+  },
+
+  async getStoreByUserId(userId: number) {
+    const result = await db.select().from(stores)
+      .where(eq(stores.userId, userId)).limit(1);
+    return result[0] || null;
+  },
+
+  async getStoreByCode(code: string) {
+    const result = await db.select().from(stores)
+      .where(eq(stores.code, code.toUpperCase())).limit(1);
+    return result[0] || null;
+  },
+
+  async createStore(data: any) {
+    const result = await db.insert(stores).values(data).returning();
+    return result[0];
+  },
+
+  async updateStore(id: number, data: any) {
+    const updateData = { ...data, updatedAt: new Date() };
+    const result = await db.update(stores).set(updateData)
+      .where(eq(stores.id, id)).returning();
+    return result[0];
+  },
+
+  async deleteStore(id: number) {
+    // حذف منتجات المتجر أولاً
+    await db.delete(storeProducts).where(eq(storeProducts.storeId, id));
+    await db.delete(stores).where(eq(stores.id, id));
+  },
+
+  // ── Store Products ──
+  async getStoreProducts(storeId: number) {
+    const list = await db.select({
+      id: storeProducts.id,
+      storeId: storeProducts.storeId,
+      productId: storeProducts.productId,
+      price: storeProducts.price,
+      isActive: storeProducts.isActive,
+      sortOrder: storeProducts.sortOrder,
+      createdAt: storeProducts.createdAt,
+      // معلومات المنتج الأصلي
+      product: products,
+    })
+    .from(storeProducts)
+    .leftJoin(products, eq(storeProducts.productId, products.id))
+    .where(eq(storeProducts.storeId, storeId))
+    .orderBy(storeProducts.sortOrder);
+
+    return list;
+  },
+
+  async getStoreProduct(storeId: number, productId: number) {
+    const result = await db.select().from(storeProducts).where(
+      and(
+        eq(storeProducts.storeId, storeId),
+        eq(storeProducts.productId, productId)
+      )
+    ).limit(1);
+    return result[0] || null;
+  },
+
+  async addProductToStore(data: {
+    storeId: number;
+    productId: number;
+    price: number;
+  }) {
+    // تحقق من عدم وجود المنتج مسبقاً
+    const existing = await storage.getStoreProduct(data.storeId, data.productId);
+    if (existing) {
+      // تحديث السعر بدل الإضافة
+      const result = await db.update(storeProducts)
+        .set({ price: data.price, isActive: true })
+        .where(eq(storeProducts.id, existing.id))
+        .returning();
+      return result[0];
+    }
+
+    // إضافة جديد في نهاية القائمة
+    const maxOrder = await db.execute(sql`
+      SELECT COALESCE(MAX(sort_order), -1) as max_order
+      FROM store_products WHERE store_id = ${data.storeId}
+    `);
+    const nextOrder = Number((maxOrder.rows[0] as any)?.max_order || -1) + 1;
+
+    const result = await db.insert(storeProducts).values({
+      storeId: data.storeId,
+      productId: data.productId,
+      price: data.price,
+      sortOrder: nextOrder,
+    }).returning();
+    return result[0];
+  },
+
+  async updateStoreProduct(id: number, data: any) {
+    const result = await db.update(storeProducts).set(data)
+      .where(eq(storeProducts.id, id)).returning();
+    return result[0];
+  },
+
+  async removeProductFromStore(storeId: number, productId: number) {
+    await db.delete(storeProducts).where(
+      and(
+        eq(storeProducts.storeId, storeId),
+        eq(storeProducts.productId, productId)
+      )
+    );
+    return { success: true };
+  },
+
+  // ── للموقع العام: متجر كامل مع منتجاته ──
+  async getStorePublic(code: string) {
+    const store = await storage.getStoreByCode(code);
+    if (!store) return null;
+    if (!store.isActive) return null;
+
+    const storeProds = await db.select({
+      id: storeProducts.id,
+      productId: storeProducts.productId,
+      price: storeProducts.price,
+      sortOrder: storeProducts.sortOrder,
+      // معلومات المنتج
+      product: products,
+    })
+    .from(storeProducts)
+    .innerJoin(products, eq(storeProducts.productId, products.id))
+    .where(
+      and(
+        eq(storeProducts.storeId, store.id),
+        eq(storeProducts.isActive, true),
+        eq(products.isActive, true),
+      )
+    )
+    .orderBy(storeProducts.sortOrder);
+
+    // فلتر: فقط المنتجات المتوفرة بالمخزون
+    const availableProducts = storeProds.filter(
+      (sp: any) => sp.product && sp.product.stock > 0
+    );
+
+    return {
+      store: {
+        id: store.id,
+        code: store.code,
+        name: store.name,
+        description: store.description,
+        phone: store.phone,
+        instagram: store.instagram,
+        facebook: store.facebook,
+        tiktok: store.tiktok,
+        color: store.color,
+      },
+      products: availableProducts,
+    };
+  },
+
+  // ── جلب منتج واحد من متجر (للصفحة الفردية) ──
+  async getStoreProductPublic(code: string, productId: number) {
+    const store = await storage.getStoreByCode(code);
+    if (!store || !store.isActive) return null;
+
+    const result = await db.select({
+      id: storeProducts.id,
+      productId: storeProducts.productId,
+      price: storeProducts.price,
+      product: products,
+    })
+    .from(storeProducts)
+    .innerJoin(products, eq(storeProducts.productId, products.id))
+    .where(
+      and(
+        eq(storeProducts.storeId, store.id),
+        eq(storeProducts.productId, productId),
+        eq(storeProducts.isActive, true),
+        eq(products.isActive, true),
+      )
+    )
+    .limit(1);
+
+    if (!result[0]) return null;
+    if (result[0].product && result[0].product.stock <= 0) return null;
+
+    return {
+      store: {
+        id: store.id,
+        code: store.code,
+        name: store.name,
+        phone: store.phone,
+        instagram: store.instagram,
+        facebook: store.facebook,
+        tiktok: store.tiktok,
+        color: store.color,
+      },
+      item: result[0],
     };
   },
 };

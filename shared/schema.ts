@@ -52,6 +52,8 @@ export const orders = pgTable("orders", {
   promoCode: text("promo_code").notNull().default(""),
   promoDiscount: real("promo_discount").notNull().default(0),
   deliveredAt: timestamp("delivered_at"), // ✅ وقت التسليم الفعلي (للحملات)
+  source: text("source").notNull().default("app"),   // ✅ 'app' | 'store'
+  storeId: integer("store_id"),                       // ✅ معرف المتجر (null للطلبات من التطبيق)
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -183,12 +185,47 @@ export const campaignRewards = pgTable('campaign_rewards', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// ══════════════════════════════════════════════════════════════════
+// ── Stores (المتاجر الإلكترونية) ──
+// ══════════════════════════════════════════════════════════════════
+export const stores = pgTable('stores', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull().unique(),  // تاجر واحد = متجر واحد
+  code: text('code').notNull().unique(),           // A7BK9XY2
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  phone: text('phone').notNull(),                  // رقم التواصل
+  instagram: text('instagram').notNull().default(''),
+  facebook: text('facebook').notNull().default(''),
+  tiktok: text('tiktok').notNull().default(''),
+  color: text('color').notNull().default('primary'), // اسم اللون من قائمة جاهزة
+  isActive: boolean('is_active').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const storeProducts = pgTable('store_products', {
+  id: serial('id').primaryKey(),
+  storeId: integer('store_id').notNull(),
+  productId: integer('product_id').notNull(),
+  price: real('price').notNull(),                  // سعر البيع في المتجر
+  isActive: boolean('is_active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// ── Relations ──
 export const ordersRelations = relations(orders, ({ many }) => ({ items: many(orderItems) }));
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
   product: one(products, { fields: [orderItems.productId], references: [products.id] }),
 }));
 export const productsRelations = relations(products, ({ many }) => ({ orderItems: many(orderItems) }));
+export const storesRelations = relations(stores, ({ many }) => ({ products: many(storeProducts) }));
+export const storeProductsRelations = relations(storeProducts, ({ one }) => ({
+  store: one(stores, { fields: [storeProducts.storeId], references: [stores.id] }),
+  product: one(products, { fields: [storeProducts.productId], references: [products.id] }),
+}));
 
 export type User = typeof users.$inferSelect;
 export type Product = typeof products.$inferSelect;
@@ -202,6 +239,8 @@ export type Campaign = typeof campaigns.$inferSelect;
 export type CampaignParticipant = typeof campaignParticipants.$inferSelect;
 export type CampaignOrder = typeof campaignOrders.$inferSelect;
 export type CampaignReward = typeof campaignRewards.$inferSelect;
+export type Store = typeof stores.$inferSelect;
+export type StoreProduct = typeof storeProducts.$inferSelect;
 
 export const pushTokens = pgTable('push_tokens', {
   id: serial('id').primaryKey(),
