@@ -12,29 +12,64 @@ app.use(helmet({
   contentSecurityPolicy: false, // مطفي لأن API فقط
 }));
 
-// ✅ CORS — مقيّد بالدومينات المعروفة
-const ALLOWED_ORIGINS = [
-  'http://localhost:8081',
-  'http://localhost:19006',
-  'https://tasleem-dashboard.vercel.app', // Vercel بعدين
-    'http://localhost:5173',
-     'https://fantastic-guide-jj454p4wgp7935xxv-8081.app.github.dev/',
-  'https://redesigned-parakeet-x59w9g9q47r6fpgj7-5173.app.github.dev',                 // ✅ أضف هذا
-      'http://localhost:3000',
-  process.env.FRONTEND_URL,
-].filter(Boolean);
+// ══════════════════════════════════════════════════════════════════
+// ── CORS — مطابقة تامة (Exact Match) — آمنة 100% ──
+// ══════════════════════════════════════════════════════════════════
 
-app.use(cors({
-  origin: (origin, callback) => {
-    // بدون origin = mobile app أو Postman
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.some(o => origin.startsWith(o as string))) {
-      return callback(null, true);
-    }
-    return callback(new Error('Not allowed by CORS'), false);
-  },
-  credentials: true,
-}));
+// ✅ دومينات الإنتاج الثابتة
+const PROD_ORIGINS = [
+  'https://matjari.vercel.app',
+  'https://tasleem-dashboard.vercel.app',
+];
+
+// ✅ دومينات التطوير (فقط خارج production)
+const DEV_ORIGINS =
+  process.env.NODE_ENV === 'production'
+    ? []
+    : [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:8081',
+        'http://localhost:19006',
+      ];
+
+// ✅ دومينات إضافية من env (مفصولة بفاصلة)
+// على Railway: EXTRA_CORS_ORIGINS=https://xxx.app.github.dev,https://yyy.vercel.app
+const EXTRA_ORIGINS = (process.env.EXTRA_CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// ✅ Set للمطابقة التامة O(1) — لا يمكن تجاوزها بـ suffix/prefix
+const ALLOWED_ORIGINS = new Set<string>([
+  ...PROD_ORIGINS,
+  ...DEV_ORIGINS,
+  ...EXTRA_ORIGINS,
+]);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // 1. بدون Origin header = طلب ليس من متصفح
+      //    (mobile app / curl / Postman / server-side fetch)
+      //    آمن لأن المتصفح لا يمكنه إخفاء الـ Origin
+      if (!origin) return callback(null, true);
+
+      // 2. مطابقة تامة — لا startsWith، لا regex
+      if (ALLOWED_ORIGINS.has(origin)) {
+        return callback(null, true);
+      }
+
+      // 3. رفض + تسجيل
+      console.warn(`🚫 CORS blocked origin: ${origin}`);
+      return callback(new Error('Not allowed by CORS'), false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 86400, // 24 ساعة — يقلل طلبات preflight
+  })
+);
 
 const httpServer = createServer(app);
 
