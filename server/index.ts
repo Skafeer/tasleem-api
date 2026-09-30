@@ -18,7 +18,7 @@ app.use(helmet({
 
 // ✅ دومينات الإنتاج الثابتة
 const PROD_ORIGINS = [
-  'https://matjari.vercel.app',
+  'https://bazari-app.vercel.app', 
   'https://tasleem-dashboard.vercel.app',
 ];
 
