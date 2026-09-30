@@ -9,6 +9,8 @@ import { eq, sql, and, lte, gte } from "drizzle-orm";
 
 // ══════════════════════════════════════════════════════════════════
 // ── عند تسليم طلب: احتساب فوري في الحملات ──
+// ✅ يتحقق من أن التسليم الفعلي كان داخل فترة الحملة
+// ✅ يدعم إعادة الاحتساب عند الرجوع من rejected → counted
 // ══════════════════════════════════════════════════════════════════
 export async function countOrderInCampaigns(orderId: number) {
   try {
@@ -17,6 +19,9 @@ export async function countOrderInCampaigns(orderId: number) {
 
     const orderProductIds = (order.items || []).map((i: any) => i.productId);
     if (orderProductIds.length === 0) return;
+
+    // ✅ وقت التسليم الفعلي (يُستخدم للتحقق من نطاق الحملة)
+    const deliveredAt = order.deliveredAt ? new Date(order.deliveredAt) : new Date();
 
     const now = new Date();
 
@@ -34,6 +39,14 @@ export async function countOrderInCampaigns(orderId: number) {
     );
 
     for (const campaign of relevant) {
+      // ✅ تحقق: هل الطلب سُلِّم فعلاً خلال فترة الحملة؟
+      const campaignStart = new Date(campaign.startsAt);
+      const campaignEnd = new Date(campaign.endsAt);
+
+      if (deliveredAt < campaignStart || deliveredAt > campaignEnd) {
+        continue; // تسليم خارج نطاق الحملة → تجاهل
+      }
+
       // موجود مسبقاً؟
       const existing = await db.select().from(campaignOrders).where(
         and(
@@ -41,17 +54,26 @@ export async function countOrderInCampaigns(orderId: number) {
           eq(campaignOrders.orderId, orderId)
         )
       ).limit(1);
-      if (existing.length > 0) continue;
 
-      // سجّل الطلب
-      await db.insert(campaignOrders).values({
-        campaignId: campaign.id,
-        userId: order.merchantId,
-        orderId,
-        status: 'counted',
-        deliveredAt: now,
-        countedAt: now,
-      });
+      // ✅ محتسب مسبقاً → تجاهل
+      if (existing.length > 0 && existing[0].status === 'counted') continue;
+
+      // ✅ كان مرفوضاً → أعِد تفعيله
+      if (existing.length > 0 && existing[0].status === 'rejected') {
+        await db.update(campaignOrders)
+          .set({ status: 'counted', countedAt: now })
+          .where(eq(campaignOrders.id, existing[0].id));
+      } else {
+        // ✅ سجل جديد
+        await db.insert(campaignOrders).values({
+          campaignId: campaign.id,
+          userId: order.merchantId,
+          orderId,
+          status: 'counted',
+          deliveredAt,
+          countedAt: now,
+        });
+      }
 
       // ابحث عن المشارك أو أنشئه
       let participant = (await db.select().from(campaignParticipants).where(
@@ -86,7 +108,6 @@ export async function countOrderInCampaigns(orderId: number) {
           targetReachedAt: now,
         }).where(eq(campaignParticipants.id, participant.id));
 
-        // إشعار
         try {
           const { sendPushNotification } = await import('./notifications');
           await sendPushNotification({
