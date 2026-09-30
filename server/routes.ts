@@ -32,7 +32,8 @@ import { storage } from "./storage";
 import { db } from "./db";
 import {
   promoCodes, promoUsages, products, orders, orderItems, banners, withdrawals,
-  favorites, notifications, pushTokens, supportMessages, categories, inventoryLog
+  favorites, notifications, pushTokens, supportMessages, categories, inventoryLog,
+  stores, storeProducts,
 } from "@shared/schema";
 import { eq, sql, and, desc } from "drizzle-orm";
 import bcrypt from "bcryptjs";
@@ -44,6 +45,9 @@ import {
   startCampaignCron,
   distributeCampaignRewards,
 } from "./campaigns";
+
+// ── Store Utilities ──
+import { generateUniqueStoreCode } from "./utils/generateCode";
 
 // ── Rate Limiter ──
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -67,6 +71,7 @@ function rateLimit(maxRequests: number, windowMs: number) {
 const authLimiter = rateLimit(10, 60_000);
 const generalLimiter = rateLimit(100, 60_000);
 const broadcastLimiter = rateLimit(5, 60_000);
+const storePublicLimiter = rateLimit(200, 60_000);
 
 const hasPermission = (user: any, perm: string): boolean => {
   if (user.role !== 'admin') return false;
@@ -174,6 +179,31 @@ async function validatePromoCode(
   return { valid: true, discount, promo };
 }
 
+// ══════════════════════════════════════════════════════════════════
+// ── Store: الألوان المسموحة ──
+// ══════════════════════════════════════════════════════════════════
+const ALLOWED_STORE_COLORS = [
+  'primary',   // #0c6679
+  'emerald',   // #10b981
+  'blue',      // #3b82f6
+  'purple',    // #8b5cf6
+  'rose',      // #f43f5e
+  'amber',     // #f59e0b
+  'orange',    // #f97316
+  'teal',      // #14b8a6
+  'indigo',    // #6366f1
+  'pink',      // #ec4899
+  'cyan',      // #06b6d4
+  'slate',     // #475569
+];
+
+const STORE_PHONE_REGEX = /^07[0-9]{9}$/;
+const STORE_PROVINCES = [
+  'بغداد', 'البصرة', 'نينوى', 'الأنبار', 'كربلاء', 'النجف',
+  'ذي قار', 'القادسية', 'بابل', 'ديالى', 'ميسان', 'واسط',
+  'صلاح الدين', 'المثنى', 'كركوك', 'دهوك', 'أربيل', 'السليمانية'
+];
+
 export async function registerRoutes(httpServer: Server, app: Express) {
   setupAuth(app);
   setupUpload(app);
@@ -230,11 +260,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ backup_phone column added to orders');
   } catch (e) { console.log('backup_phone migration note:', e); }
 
-  // ✅ Migration: وقت التسليم الفعلي (للحملات)
   try {
     await db.execute(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP`);
     console.log('✅ delivered_at column added to orders');
   } catch (e) { console.log('delivered_at migration note:', e); }
+
+  // ✅ Migration: عمودي المتجر في الطلبات
+  try {
+    await db.execute(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'app'`);
+    await db.execute(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_id INTEGER`);
+    console.log('✅ source + store_id columns added to orders');
+  } catch (e) { console.log('orders store columns migration note:', e); }
 
   try {
     await db.execute(`CREATE TABLE IF NOT EXISTS favorites (
@@ -362,6 +398,42 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     )`);
     console.log('✅ campaign_rewards migration done');
   } catch (e) { console.log('campaign_rewards migration note:', e); }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Stores Migrations ──
+  // ══════════════════════════════════════════════════════════════════
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS stores (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL UNIQUE,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL,
+      instagram TEXT NOT NULL DEFAULT '',
+      facebook TEXT NOT NULL DEFAULT '',
+      tiktok TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT 'primary',
+      is_active BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ stores migration done');
+  } catch (e) { console.log('stores migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS store_products (
+      id SERIAL PRIMARY KEY,
+      store_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      price REAL NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(store_id, product_id)
+    )`);
+    console.log('✅ store_products migration done');
+  } catch (e) { console.log('store_products migration note:', e); }
 
   // ══════════════════════════════════════════════════════════════════
   // ── Products ──
@@ -553,6 +625,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         companyProfit,
         promoCode: validPromo,
         promoDiscount: totalPromoDiscount,
+        source: 'app',
       }, enrichedItems);
 
       if (appliedPromo && order) {
@@ -627,8 +700,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ══════════════════════════════════════════════════════════════════
   // ── تحديث حالة الطلب ──
-  // ✅ يربط مع نظام الحملات (countOrderInCampaigns / rejectOrderInCampaigns)
-  // ✅ يسجّل delivered_at عند أول تسليم (لاستخدامه في التحقق من نطاق الحملة)
   // ══════════════════════════════════════════════════════════════════
   app.patch("/api/orders/:id/status", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin" && req.user.role !== "merchant") {
@@ -677,7 +748,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const updated = await storage.updateOrder(Number(req.params.id), { status: newStatus });
 
-      // ✅ سجّل وقت التسليم الفعلي لأول مرة فقط (لا يُحدَّث لو موجود)
       if (newIsBalance && !order.deliveredAt) {
         await db.execute(sql`UPDATE orders SET delivered_at = NOW() WHERE id = ${order.id} AND delivered_at IS NULL`);
       }
@@ -717,7 +787,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         } catch (_) {}
       }
 
-      // ── 🎯 ربط مع نظام الحملات ──
       try {
         if (newIsBalance) {
           await countOrderInCampaigns(order.id);
@@ -1175,7 +1244,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ══════════════════════════════════════════════════════════════════
-  // ── Campaigns (الحملات) ──
+  // ── Campaigns ──
   // ══════════════════════════════════════════════════════════════════
 
   app.get("/api/admin/campaigns", requireAuth, async (req: any, res) => {
@@ -1342,6 +1411,400 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) {
       console.error('Error getting my rewards:', e);
       res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Stores (المتاجر الإلكترونية) ──
+  // ══════════════════════════════════════════════════════════════════
+
+  // ─── جلب متجر التاجر الحالي ───
+  app.get("/api/store/my", requireAuth, async (req: any, res) => {
+    try {
+      const store = await storage.getStoreByUserId(req.user.id);
+      if (!store) return res.json({ store: null });
+
+      const storeProds = await storage.getStoreProducts(store.id);
+
+      res.json({
+        store,
+        products: storeProds,
+      });
+    } catch (e: any) {
+      console.error('Error getting my store:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── إنشاء متجر جديد ───
+  app.post("/api/store/create", requireAuth, generalLimiter, async (req: any, res) => {
+    try {
+      // تحقق: هل لديه متجر مسبقاً؟
+      const existing = await storage.getStoreByUserId(req.user.id);
+      if (existing) {
+        return res.status(400).json({ message: 'لديك متجر بالفعل' });
+      }
+
+      const { name, description, phone, instagram, facebook, tiktok, color } = req.body;
+
+      if (!validateString(name, 100))
+        return res.status(400).json({ message: 'اسم المتجر مطلوب' });
+      if (!phone || !STORE_PHONE_REGEX.test(phone.trim()))
+        return res.status(400).json({ message: 'رقم التواصل غير صحيح' });
+      if (color && !ALLOWED_STORE_COLORS.includes(color))
+        return res.status(400).json({ message: 'اللون غير مدعوم' });
+
+      // توليد كود فريد
+      const code = await generateUniqueStoreCode();
+
+      const store = await storage.createStore({
+        userId: req.user.id,
+        code,
+        name: name.trim(),
+        description: (description || '').trim(),
+        phone: phone.trim(),
+        instagram: (instagram || '').trim(),
+        facebook: (facebook || '').trim(),
+        tiktok: (tiktok || '').trim(),
+        color: color || 'primary',
+        isActive: true,
+      } as any);
+
+      res.status(201).json({ store });
+    } catch (e: any) {
+      console.error('Create store error:', e);
+      res.status(500).json({ message: e.message || 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── تعديل إعدادات المتجر ───
+  app.patch("/api/store/settings", requireAuth, async (req: any, res) => {
+    try {
+      const store = await storage.getStoreByUserId(req.user.id);
+      if (!store) return res.status(404).json({ message: 'ليس لديك متجر' });
+
+      const { name, description, phone, instagram, facebook, tiktok, color, isActive } = req.body;
+
+      const updateData: any = {};
+
+      if (name !== undefined) {
+        if (!validateString(name, 100))
+          return res.status(400).json({ message: 'اسم المتجر غير صحيح' });
+        updateData.name = name.trim();
+      }
+      if (phone !== undefined) {
+        if (!STORE_PHONE_REGEX.test(phone.trim()))
+          return res.status(400).json({ message: 'رقم التواصل غير صحيح' });
+        updateData.phone = phone.trim();
+      }
+      if (description !== undefined) updateData.description = (description || '').trim();
+      if (instagram !== undefined) updateData.instagram = (instagram || '').trim();
+      if (facebook !== undefined) updateData.facebook = (facebook || '').trim();
+      if (tiktok !== undefined) updateData.tiktok = (tiktok || '').trim();
+      if (color !== undefined) {
+        if (!ALLOWED_STORE_COLORS.includes(color))
+          return res.status(400).json({ message: 'اللون غير مدعوم' });
+        updateData.color = color;
+      }
+      if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
+      const updated = await storage.updateStore(store.id, updateData);
+      res.json({ store: updated });
+    } catch (e: any) {
+      console.error('Update store settings error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── إضافة منتج للمتجر ───
+  app.post("/api/store/products", requireAuth, async (req: any, res) => {
+    try {
+      const store = await storage.getStoreByUserId(req.user.id);
+      if (!store) return res.status(404).json({ message: 'ليس لديك متجر' });
+
+      const { productId, price } = req.body;
+
+      if (!productId)
+        return res.status(400).json({ message: 'المنتج مطلوب' });
+      if (!price || Number(price) <= 0)
+        return res.status(400).json({ message: 'السعر يجب أن يكون أكبر من صفر' });
+
+      const product = await storage.getProduct(Number(productId));
+      if (!product) return res.status(404).json({ message: 'المنتج غير موجود' });
+      if (product.isActive === false)
+        return res.status(400).json({ message: 'المنتج غير متاح' });
+
+      const finalPrice = Number(price);
+
+      // ✅ تحقق: السعر لا يقل عن wholesalePrice
+      if (finalPrice < product.wholesalePrice) {
+        return res.status(400).json({
+          message: `السعر يجب أن يكون ${product.wholesalePrice.toLocaleString()} د.ع أو أكثر`,
+        });
+      }
+
+      const result = await storage.addProductToStore({
+        storeId: store.id,
+        productId: Number(productId),
+        price: finalPrice,
+      });
+
+      res.status(201).json(result);
+    } catch (e: any) {
+      console.error('Add product to store error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── تعديل منتج في المتجر ───
+  app.patch("/api/store/products/:id", requireAuth, async (req: any, res) => {
+    try {
+      const store = await storage.getStoreByUserId(req.user.id);
+      if (!store) return res.status(404).json({ message: 'ليس لديك متجر' });
+
+      const itemId = Number(req.params.id);
+      const storeProds = await storage.getStoreProducts(store.id);
+      const target = storeProds.find((sp: any) => sp.id === itemId);
+      if (!target) return res.status(404).json({ message: 'المنتج غير موجود في متجرك' });
+
+      const { price, isActive, sortOrder } = req.body;
+      const updateData: any = {};
+
+      if (price !== undefined) {
+        if (Number(price) <= 0)
+          return res.status(400).json({ message: 'السعر يجب أن يكون أكبر من صفر' });
+
+        const product = await storage.getProduct(target.productId);
+        if (product && Number(price) < product.wholesalePrice) {
+          return res.status(400).json({
+            message: `السعر يجب أن يكون ${product.wholesalePrice.toLocaleString()} د.ع أو أكثر`,
+          });
+        }
+        updateData.price = Number(price);
+      }
+
+      if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+      if (sortOrder !== undefined) updateData.sortOrder = Number(sortOrder);
+
+      const updated = await storage.updateStoreProduct(itemId, updateData);
+      res.json(updated);
+    } catch (e: any) {
+      console.error('Update store product error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── حذف منتج من المتجر ───
+  app.delete("/api/store/products/:productId", requireAuth, async (req: any, res) => {
+    try {
+      const store = await storage.getStoreByUserId(req.user.id);
+      if (!store) return res.status(404).json({ message: 'ليس لديك متجر' });
+
+      const productId = Number(req.params.productId);
+      await storage.removeProductFromStore(store.id, productId);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Remove product from store error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Store Public Endpoints (بدون auth) ──
+  // ══════════════════════════════════════════════════════════════════
+
+  // ─── بيانات متجر عام (بالكود) ───
+  app.get("/api/store/public/:code", storePublicLimiter, async (req: any, res) => {
+    try {
+      const code = String(req.params.code).toUpperCase();
+      const data = await storage.getStorePublic(code);
+      if (!data) return res.status(404).json({ message: 'المتجر غير موجود' });
+      res.json(data);
+    } catch (e: any) {
+      console.error('Get public store error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── منتج واحد من متجر عام ───
+  app.get("/api/store/public/:code/product/:id", storePublicLimiter, async (req: any, res) => {
+    try {
+      const code = String(req.params.code).toUpperCase();
+      const productId = Number(req.params.id);
+      const data = await storage.getStoreProductPublic(code, productId);
+      if (!data) return res.status(404).json({ message: 'المنتج غير موجود' });
+      res.json(data);
+    } catch (e: any) {
+      console.error('Get public store product error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── إنشاء طلب من المتجر (بدون auth) ───
+  app.post("/api/store/public/:code/order", storePublicLimiter, async (req: any, res) => {
+    try {
+      const code = String(req.params.code).toUpperCase();
+      const store = await storage.getStoreByCode(code);
+      if (!store) return res.status(404).json({ message: 'المتجر غير موجود' });
+      if (!store.isActive) return res.status(400).json({ message: 'المتجر معطّل' });
+
+      const { items, customerName, customerPhone, backupPhone, province, address, notes } = req.body;
+
+      if (!items || !Array.isArray(items) || items.length === 0)
+        return res.status(400).json({ message: 'السلة فارغة' });
+      if (items.length > 50)
+        return res.status(400).json({ message: 'الحد الأقصى 50 منتج' });
+      if (!validateString(customerName, 100))
+        return res.status(400).json({ message: 'اسم الزبون مطلوب' });
+      if (!validatePhone(customerPhone))
+        return res.status(400).json({ message: 'رقم الهاتف غير صحيح' });
+      if (!validateString(province, 50))
+        return res.status(400).json({ message: 'المحافظة مطلوبة' });
+      if (!validateString(address, 500))
+        return res.status(400).json({ message: 'العنوان مطلوب' });
+
+      // ✅ جلب منتجات المتجر النشطة
+      const storeProds = await storage.getStoreProducts(store.id);
+      const activeStoreProds = storeProds.filter((sp: any) => sp.isActive);
+
+      let totalAmount = 0, totalCost = 0, totalCompanyCost = 0;
+      const enrichedItems: any[] = [];
+
+      for (const item of items) {
+        const productId = Number(item.productId);
+        const qty = Number(item.quantity);
+
+        if (!productId || !qty || qty <= 0) {
+          return res.status(400).json({ message: 'بيانات السلة غير صحيحة' });
+        }
+
+        const storeProduct = activeStoreProds.find((sp: any) => sp.productId === productId);
+        if (!storeProduct) {
+          return res.status(400).json({ message: `المنتج ${productId} غير متوفر في المتجر` });
+        }
+
+        const product = await storage.getProduct(productId);
+        if (!product || product.isActive === false) {
+          return res.status(400).json({ message: `المنتج "${storeProduct.product?.name || productId}" غير متاح` });
+        }
+
+        if (product.stock < qty) {
+          return res.status(400).json({
+            message: `"${product.name}" متوفر فقط ${product.stock} قطعة`,
+          });
+        }
+
+        const price = storeProduct.price; // ✅ السعر من المتجر
+        totalAmount += price * qty;
+        totalCost += product.wholesalePrice * qty;
+        totalCompanyCost += (product.companyWholesalePrice || 0) * qty;
+
+        enrichedItems.push({
+          productId,
+          quantity: qty,
+          price,
+          cost: product.wholesalePrice,
+        });
+      }
+
+      // ── التوصيل ──
+      const isBasra = province.includes("البصرة");
+      const shippingCost = isBasra ? 3000 : 5000;
+      const finalAmount = totalAmount + shippingCost;
+
+      // ── الحسابات ──
+      const totalProfit = totalAmount - totalCost;
+      const companyProfit = totalCost - totalCompanyCost;
+
+      // ── إنشاء الطلب ──
+      const order = await storage.createOrder({
+        merchantId: store.userId,
+        customerName, customerPhone, province, address,
+        backupPhone: backupPhone || null,
+        notes: notes || "",
+        status: "processing",
+        totalAmount: finalAmount,
+        shippingCost,
+        totalProfit,
+        companyProfit,
+        promoCode: "",
+        promoDiscount: 0,
+        source: 'store',
+        storeId: store.id,
+      }, enrichedItems);
+
+      // ── تخفيض المخزون ──
+      await Promise.all(enrichedItems.map(async (item: any) => {
+        const product = await storage.getProduct(item.productId);
+        if (product) {
+          const newStock = Math.max(0, product.stock - item.quantity);
+          await storage.updateProduct(item.productId, { stock: newStock });
+          await db.insert(inventoryLog).values({
+            productId: item.productId, adminId: null,
+            change: -item.quantity, reason: 'order',
+            note: `طلب متجر #${order?.id}`, stockAfter: newStock,
+          }).catch(() => {});
+          if (newStock === 0) {
+            try {
+              const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+              const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+              if (adminIds.length > 0) {
+                const { sendPushNotification } = await import('./notifications');
+                await sendPushNotification({
+                  userIds: adminIds,
+                  title: '⚠️ نفد المخزون',
+                  body: `المنتج "${product.name}" نفد المخزون بالكامل`,
+                  data: { type: 'stock_out', productId: String(item.productId) },
+                });
+              }
+            } catch (_) {}
+          }
+        }
+      }));
+
+      // ── تحديث رصيد التاجر ──
+      const freshUser = await storage.getUser(store.userId);
+      if (freshUser) {
+        await storage.updateUser(store.userId, {
+          pendingBalance: (freshUser.pendingBalance || 0) + totalProfit,
+        });
+      }
+
+      // ── إشعار للتاجر (طلب جديد من متجره) ──
+      try {
+        const { sendPushNotification } = await import('./notifications');
+        await sendPushNotification({
+          userIds: [store.userId],
+          title: '🛒 طلب من متجرك الإلكتروني',
+          body: `طلب جديد #${order?.id} من ${customerName} — ${finalAmount.toLocaleString()} د.ع`,
+          data: { type: 'store_order', orderId: String(order?.id ?? '') },
+        });
+      } catch (_) {}
+
+      // ── إشعار للأدمن ──
+      try {
+        const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+        const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+        if (adminIds.length > 0) {
+          const { sendPushNotification } = await import('./notifications');
+          await sendPushNotification({
+            userIds: adminIds,
+            title: '🛍 طلب جديد (من متجر)',
+            body: `طلب من متجر "${store.name}" — ${finalAmount.toLocaleString()} د.ع`,
+            data: { type: 'new_order', orderId: String(order?.id ?? '') },
+          });
+        }
+      } catch (_) {}
+
+      res.status(201).json({
+        orderId: order?.id,
+        totalAmount: finalAmount,
+        storeName: store.name,
+        storePhone: store.phone,
+      });
+    } catch (e: any) {
+      console.error('Create store order error:', e);
+      res.status(500).json({ message: e.message || 'حدث خطأ في الخادم' });
     }
   });
 
@@ -1737,6 +2200,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const userId = req.user.id;
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+
+      // حذف المتجر إن وجد
+      const store = await storage.getStoreByUserId(userId);
+      if (store) {
+        await storage.deleteStore(store.id);
+      }
+
       await db.delete(orders).where(eq(orders.merchantId, userId));
       await db.delete(withdrawals).where(eq(withdrawals.merchantId, userId));
       await db.delete(favorites).where(eq(favorites.userId, userId));
