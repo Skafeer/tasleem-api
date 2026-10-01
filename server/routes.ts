@@ -1033,8 +1033,64 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ── Admin Users ──
   app.get("/api/admin/users", requireAuth, async (req: any, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ message: "غير مصرح" });
-    try { res.json(await storage.getAllUsers()); }
-    catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
+    try {
+      // ✅ استعلام SQL شامل يدمج بيانات المتجر الإلكتروني مع كل تاجر
+      const result = await db.execute(sql`
+        SELECT
+          u.id,
+          u.phone,
+          u.password,
+          u.store_name,
+          u.address,
+          u.role,
+          u.merchant_id,
+          u.balance,
+          u.pending_balance,
+          u.is_super_admin,
+          u.permissions,
+          u.created_at,
+          s.id AS store_id,
+          s.code AS store_code,
+          s.name AS store_ecom_name,
+          s.color AS store_color,
+          s.is_active AS store_is_active,
+          s.created_at AS store_created_at,
+          COALESCE((SELECT COUNT(*)::int FROM store_products WHERE store_id = s.id), 0) AS store_products_count
+        FROM users u
+        LEFT JOIN stores s ON s.user_id = u.id
+        ORDER BY u.id DESC
+      `);
+
+      // ✅ تحويل snake_case → camelCase للتوافق مع الفرونت
+      const users = (result.rows as any[]).map((r: any) => ({
+        id: r.id,
+        phone: r.phone,
+        password: r.password,
+        storeName: r.store_name,
+        address: r.address,
+        role: r.role,
+        merchantId: r.merchant_id,
+        balance: r.balance,
+        pendingBalance: r.pending_balance,
+        isSuperAdmin: r.is_super_admin,
+        permissions: r.permissions,
+        createdAt: r.created_at,
+        // ✅ بيانات المتجر الإلكتروني
+        storeId: r.store_id || null,
+        storeCode: r.store_code || null,
+        storeEcomName: r.store_ecom_name || null,
+        storeColor: r.store_color || null,
+        storeIsActive: r.store_is_active || false,
+        storeCreatedAt: r.store_created_at || null,
+        storeProductsCount: Number(r.store_products_count || 0),
+        hasEcomStore: !!r.store_id,
+      }));
+
+      res.json(users);
+    } catch (e: any) {
+      console.error("Error getting admin users:", e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
   });
 
   app.patch("/api/admin/users/:id", requireAuth, async (req: any, res) => {
@@ -1469,6 +1525,26 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         color: color || 'primary',
         isActive: true,
       } as any);
+
+      // ✅ إشعار للأدمن — متجر جديد
+      try {
+        const adminUsers = await db.execute(sql`SELECT id FROM users WHERE role = 'admin'`);
+        const adminIds = (adminUsers.rows as any[]).map((u: any) => u.id);
+        if (adminIds.length > 0) {
+          const { sendPushNotification } = await import('./notifications');
+          await sendPushNotification({
+            userIds: adminIds,
+            title: '🏪 متجر إلكتروني جديد',
+            body: `${req.user.storeName} أنشأ متجر "${name}" — كود: ${code}`,
+            data: {
+              type: 'new_store',
+              storeId: String(store.id),
+              storeCode: code,
+              merchantId: String(req.user.id),
+            },
+          });
+        }
+      } catch (_) {}
 
       res.status(201).json({ store });
     } catch (e: any) {
