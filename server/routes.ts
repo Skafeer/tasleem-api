@@ -1119,6 +1119,157 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ message: 'حدث خطأ في الخادم' }); }
   });
 
+    // ══════════════════════════════════════════════════════════════════
+  // ── Orders Export (CSV + JSON) ──
+  // ══════════════════════════════════════════════════════════════════
+
+  // ── Helper: بناء صفوف التصدير للطلبات المُسلَّمة فقط ──
+  async function buildOrdersExportRows(search?: string) {
+    let allOrders = await storage.getOrders();
+
+    // ✅ فقط الطلبات المُسلَّمة
+    allOrders = allOrders.filter((o: any) => o.status === 'delivered');
+
+    if (search) {
+      const q = String(search).toLowerCase();
+      allOrders = allOrders.filter((o: any) =>
+        String(o.id).includes(q) ||
+        o.customerName?.toLowerCase().includes(q) ||
+        o.customerPhone?.includes(q)
+      );
+    }
+
+    allOrders.sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    const users = await storage.getAllUsers();
+    const usersMap = new Map((users as any[]).map((u: any) => [u.id, u]));
+
+    const headers = [
+      'التاريخ',
+      'رقم الطلب',
+      'اسم صاحب الطلب',
+      'اسم المنتج',
+      'سعر الجملة',
+      'العدد',
+      'سعر البيع',
+      'ربح الجملة',
+      'حالة الطلب',
+      'اسم التاجر',
+    ];
+
+    const rows: any[][] = [];
+
+    for (const o of allOrders as any[]) {
+      const merchant = usersMap.get(o.merchantId);
+      const items = o.items || [];
+
+      const dt = new Date(o.createdAt);
+      const yy = dt.getFullYear();
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      const dateStr = `${yy}/${mm}/${dd}`;
+
+      if (items.length === 0) {
+        rows.push([
+          dateStr,
+          `#${o.id}`,
+          o.customerName || '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          'تم التوصيل',
+          merchant?.storeName || '',
+        ]);
+        continue;
+      }
+
+      for (const item of items) {
+        const productName = item.product?.name || `منتج #${item.productId}`;
+        const cost = item.cost || 0;
+        const price = item.price || 0;
+        const qty = item.quantity || 0;
+        const profit = (price - cost) * qty;
+
+        rows.push([
+          dateStr,
+          `#${o.id}`,
+          o.customerName || '',
+          productName,
+          cost,
+          qty,
+          price,
+          profit,
+          'تم التوصيل',
+          merchant?.storeName || '',
+        ]);
+      }
+    }
+
+    return { headers, rows };
+  }
+
+  // ── CSV Export (يفتح في Google Sheets) ──
+  app.get('/api/admin/orders/export', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'غير مصرح' });
+    }
+
+    try {
+      const { search } = req.query;
+      const { headers, rows } = await buildOrdersExportRows(
+        search ? String(search) : undefined
+      );
+
+      const esc = (v: any) => {
+        if (v === null || v === undefined) return '';
+        const s = String(v).replace(/"/g, '""').replace(/[\r\n]+/g, ' ');
+        return `"${s}"`;
+      };
+
+      const lines: string[] = [];
+      lines.push(headers.map(esc).join(','));
+      for (const row of rows) {
+        lines.push(row.map(esc).join(','));
+      }
+
+      const csv = '\uFEFF' + lines.join('\r\n');
+      const dateFileName = new Date().toISOString().slice(0, 10);
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="tasleem-delivered-${dateFileName}.csv"`
+      );
+      res.send(csv);
+    } catch (e: any) {
+      console.error('Export CSV error:', e);
+      res.status(500).json({ message: 'حدث خطأ في تصدير الطلبات' });
+    }
+  });
+
+  // ── JSON Export (يستخدمه الفرونت لبناء PDF) ──
+  app.get('/api/admin/orders/export-json', requireAuth, async (req: any, res) => {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'غير مصرح' });
+    }
+
+    try {
+      const { search } = req.query;
+      const { headers, rows } = await buildOrdersExportRows(
+        search ? String(search) : undefined
+      );
+      res.json({ headers, rows });
+    } catch (e: any) {
+      console.error('Export JSON error:', e);
+      res.status(500).json({ message: 'حدث خطأ في تصدير الطلبات' });
+    }
+  });
+  
   // ══════════════════════════════════════════════════════════════════
   // ── Promo Codes Routes ──
   // ══════════════════════════════════════════════════════════════════
