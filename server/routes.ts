@@ -1155,7 +1155,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       'سعر الجملة',
       'العدد',
       'سعر البيع',
-      'ربح الجملة',
+      'ربح التاجر',
       'حالة الطلب',
       'اسم التاجر',
     ];
