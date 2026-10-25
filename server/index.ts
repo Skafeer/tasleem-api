@@ -20,6 +20,7 @@ app.use(helmet({
 const PROD_ORIGINS = [
   'https://bazari-app.vercel.app', 
   'https://tasleem-dashboard.vercel.app',
+  'https://tasleemiq.vercel.app',
 ];
 
 // ✅ دومينات التطوير (فقط خارج production)
