@@ -435,6 +435,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ store_products migration done');
   } catch (e) { console.log('store_products migration note:', e); }
 
+  
     // ══════════════════════════════════════════════════════════════════
   // ── Referrals Migrations ──
   // ══════════════════════════════════════════════════════════════════
