@@ -51,9 +51,9 @@ export const orders = pgTable("orders", {
   totalProfit: real("total_profit").notNull().default(0),
   promoCode: text("promo_code").notNull().default(""),
   promoDiscount: real("promo_discount").notNull().default(0),
-  deliveredAt: timestamp("delivered_at"), // ✅ وقت التسليم الفعلي (للحملات)
-  source: text("source").notNull().default("app"),   // ✅ 'app' | 'store'
-  storeId: integer("store_id"),                       // ✅ معرف المتجر (null للطلبات من التطبيق)
+  deliveredAt: timestamp("delivered_at"),
+  source: text("source").notNull().default("app"),
+  storeId: integer("store_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -190,15 +190,15 @@ export const campaignRewards = pgTable('campaign_rewards', {
 // ══════════════════════════════════════════════════════════════════
 export const stores = pgTable('stores', {
   id: serial('id').primaryKey(),
-  userId: integer('user_id').notNull().unique(),  // تاجر واحد = متجر واحد
-  code: text('code').notNull().unique(),           // A7BK9XY2
+  userId: integer('user_id').notNull().unique(),
+  code: text('code').notNull().unique(),
   name: text('name').notNull(),
   description: text('description').notNull().default(''),
-  phone: text('phone').notNull(),                  // رقم التواصل
+  phone: text('phone').notNull(),
   instagram: text('instagram').notNull().default(''),
   facebook: text('facebook').notNull().default(''),
   tiktok: text('tiktok').notNull().default(''),
-  color: text('color').notNull().default('primary'), // اسم اللون من قائمة جاهزة
+  color: text('color').notNull().default('primary'),
   isActive: boolean('is_active').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
@@ -208,7 +208,7 @@ export const storeProducts = pgTable('store_products', {
   id: serial('id').primaryKey(),
   storeId: integer('store_id').notNull(),
   productId: integer('product_id').notNull(),
-  price: real('price').notNull(),                  // سعر البيع في المتجر
+  price: real('price').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow(),
@@ -310,3 +310,57 @@ export const otpCodes = pgTable('otp_codes', {
 });
 
 export type OtpCode = typeof otpCodes.$inferSelect;
+
+// ══════════════════════════════════════════════════════════════════
+// ── Referrals (نظام الإحالة) ──
+// ══════════════════════════════════════════════════════════════════
+
+export const referrals = pgTable('referrals', {
+  id: serial('id').primaryKey(),
+  referrerId: integer('referrer_id').notNull(),
+  refereeId: integer('referee_id').notNull().unique(),
+  code: text('code').notNull(),
+  deliveredOrdersCount: integer('delivered_orders_count').notNull().default(0),
+  reward1Paid: boolean('reward1_paid').notNull().default(false),
+  reward1At: timestamp('reward1_at'),
+  reward2Paid: boolean('reward2_paid').notNull().default(false),
+  reward2At: timestamp('reward2_at'),
+  reward3Paid: boolean('reward3_paid').notNull().default(false),
+  reward3At: timestamp('reward3_at'),
+  totalRewardPaid: real('total_reward_paid').notNull().default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const referralRewards = pgTable('referral_rewards', {
+  id: serial('id').primaryKey(),
+  referralId: integer('referral_id').notNull(),
+  referrerId: integer('referrer_id').notNull(),
+  refereeId: integer('referee_id').notNull(),
+  stage: integer('stage').notNull(),
+  amount: real('amount').notNull(),
+  ordersAtPayout: integer('orders_at_payout').notNull(),
+  status: text('status').notNull().default('paid'),
+  cancelledAt: timestamp('cancelled_at'),
+  cancelledBy: integer('cancelled_by'),
+  cancelReason: text('cancel_reason'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const processedReferralOrders = pgTable('processed_referral_orders', {
+  id: serial('id').primaryKey(),
+  orderId: integer('order_id').notNull().unique(),
+  refereeId: integer('referee_id').notNull(),
+  referralId: integer('referral_id').notNull(),
+  processedAt: timestamp('processed_at').defaultNow(),
+});
+
+export const referralSettings = pgTable('referral_settings', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  value: text('value').notNull(),
+});
+
+export type Referral = typeof referrals.$inferSelect;
+export type ReferralReward = typeof referralRewards.$inferSelect;
+export type ProcessedReferralOrder = typeof processedReferralOrders.$inferSelect;
+export type ReferralSetting = typeof referralSettings.$inferSelect;

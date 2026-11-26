@@ -435,6 +435,81 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ store_products migration done');
   } catch (e) { console.log('store_products migration note:', e); }
 
+    // ══════════════════════════════════════════════════════════════════
+  // ── Referrals Migrations ──
+  // ══════════════════════════════════════════════════════════════════
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS referrals (
+      id SERIAL PRIMARY KEY,
+      referrer_id INTEGER NOT NULL,
+      referee_id INTEGER NOT NULL UNIQUE,
+      code TEXT NOT NULL,
+      delivered_orders_count INTEGER NOT NULL DEFAULT 0,
+      reward1_paid BOOLEAN NOT NULL DEFAULT FALSE,
+      reward1_at TIMESTAMP,
+      reward2_paid BOOLEAN NOT NULL DEFAULT FALSE,
+      reward2_at TIMESTAMP,
+      reward3_paid BOOLEAN NOT NULL DEFAULT FALSE,
+      reward3_at TIMESTAMP,
+      total_reward_paid REAL NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)`);
+    console.log('✅ referrals migration done');
+  } catch (e) { console.log('referrals migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS referral_rewards (
+      id SERIAL PRIMARY KEY,
+      referral_id INTEGER NOT NULL,
+      referrer_id INTEGER NOT NULL,
+      referee_id INTEGER NOT NULL,
+      stage INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      orders_at_payout INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'paid',
+      cancelled_at TIMESTAMP,
+      cancelled_by INTEGER,
+      cancel_reason TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_referral_rewards_referral ON referral_rewards(referral_id)`);
+    console.log('✅ referral_rewards migration done');
+  } catch (e) { console.log('referral_rewards migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS processed_referral_orders (
+      id SERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL UNIQUE,
+      referee_id INTEGER NOT NULL,
+      referral_id INTEGER NOT NULL,
+      processed_at TIMESTAMP DEFAULT NOW()
+    )`);
+    console.log('✅ processed_referral_orders migration done');
+  } catch (e) { console.log('processed_referral_orders migration note:', e); }
+
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS referral_settings (
+      id SERIAL PRIMARY KEY,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL
+    )`);
+    await db.execute(`
+      INSERT INTO referral_settings (key, value) VALUES
+        ('referral_enabled', 'true'),
+        ('referral_days_hold', '7'),
+        ('referral_threshold_1', '5'),
+        ('referral_threshold_2', '20'),
+        ('referral_threshold_3', '45'),
+        ('referral_reward_1', '5000'),
+        ('referral_reward_2', '20000'),
+        ('referral_reward_3', '35000'),
+        ('referral_share_text', 'انضم لتسليم عبر كودي {CODE} واحصل على أول طلبك بسهولة! تسليم تتكفل بالتوصيل والمخزون، وانت ركز على البيع. 🚀')
+      ON CONFLICT (key) DO NOTHING
+    `);
+    console.log('✅ referral_settings migration + seed done');
+  } catch (e) { console.log('referral_settings migration note:', e); }
+
   // ══════════════════════════════════════════════════════════════════
   // ── Products ──
   // ══════════════════════════════════════════════════════════════════
