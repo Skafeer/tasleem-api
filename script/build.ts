@@ -12,7 +12,7 @@ async function buildAll() {
     outfile: "dist/index.cjs",
     define: { "process.env.NODE_ENV": '"production"' },
     minify: true,
-    external: ["pg-native"],
+    external: ["pg-native", "node-cron"],
     alias: { "@shared": "./shared" },
     logLevel: "info",
   });
