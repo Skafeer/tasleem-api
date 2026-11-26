@@ -6,8 +6,9 @@ import { promisify } from "util";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
 import { db } from "./db";
-import { otpCodes } from "../shared/schema";
+import { otpCodes, referrals } from "../shared/schema";
 import { eq, and, gt } from "drizzle-orm";
+import { validateReferralCode, createReferral } from "./referral";
 
 const scryptAsync = promisify(scrypt);
 if (!process.env.SESSION_SECRET) {
@@ -229,7 +230,7 @@ export function setupAuth(app: Express) {
   // ── 3. التسجيل مع OTP ────────────────────────────────────────
   app.post("/api/auth/register", authRateLimit, async (req, res) => {
     try {
-      const { phone, password, storeName, address, otpCode } = req.body;
+      const { phone, password, storeName, address, otpCode, referralCode } = req.body;
       if (!phone || !/^07[0-9]{9}$/.test(phone.trim()))
         return res.status(400).json({ message: 'رقم الهاتف يجب أن يبدأ بـ 07 ويكون 11 رقم' });
       if (!password || password.trim().length < 6)
@@ -238,6 +239,18 @@ export function setupAuth(app: Express) {
         return res.status(400).json({ message: 'اسم المتجر مطلوب' });
       if (!otpCode)
         return res.status(400).json({ message: 'رمز التحقق مطلوب' });
+
+      // ✅ التحقق من كود الإحالة (اختياري) — قبل أي شيء
+      let referrerId: number | null = null;
+      let cleanReferralCode: string | null = null;
+      if (referralCode && String(referralCode).trim() !== '') {
+        const check = await validateReferralCode(String(referralCode));
+        if (!check.valid) {
+          return res.status(400).json({ message: check.error || 'كود الإحالة غير صحيح' });
+        }
+        referrerId = check.referrer!.id;
+        cleanReferralCode = check.referrer!.merchantId;
+      }
 
       const now = new Date();
       const otpRows = await db.select().from(otpCodes)
@@ -268,6 +281,26 @@ export function setupAuth(app: Express) {
         password: await hashPassword(password),
         role: 'merchant', merchantId, balance: 0, pendingBalance: 0,
       });
+
+      // ✅ إنشاء الإحالة (بعد إنشاء المستخدم)
+      if (referrerId && cleanReferralCode) {
+        const result = await createReferral(referrerId, user.id, cleanReferralCode);
+        if (result.ok) {
+          // إشعار للداعي — مدعو جديد
+          try {
+            const { sendPushNotification } = await import('./notifications');
+            await sendPushNotification({
+              userIds: [referrerId],
+              title: '🎉 تاجر جديد انضم عبر كودك',
+              body: `${storeName} سجل باستخدام كود الإحالة الخاص بك`,
+              data: { type: 'referral_joined', refereeId: String(user.id) },
+            });
+          } catch (_) {}
+        } else {
+          console.warn('createReferral failed:', result.error);
+        }
+      }
+
       await db.delete(otpCodes).where(eq(otpCodes.id, otp.id));
       const { password: _, ...u } = user;
       const token = jwt.sign(u, JWT_SECRET, { expiresIn: '30d' });

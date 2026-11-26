@@ -5,9 +5,10 @@ import {
   processedReferralOrders,
   referralSettings,
   users,
-  orders,
+  notifications,
 } from '@shared/schema';
-import { eq, and, sql, lte, isNotNull } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { sendPushNotification } from './notifications';
 
 // ══════════════════════════════════════════════════════════════════
 // ── Settings Cache ──
@@ -65,7 +66,6 @@ export async function validateReferralCode(code: string): Promise<{
     return { valid: false, error: 'كود الإحالة غير صحيح' };
   }
 
-  // البحث عن التاجر الداعي بواسطة merchantId
   const rows = await db.select().from(users).where(eq(users.merchantId, clean)).limit(1);
   if (!rows.length) {
     return { valid: false, error: 'كود الإحالة غير موجود' };
@@ -81,7 +81,7 @@ export async function validateReferralCode(code: string): Promise<{
 }
 
 // ══════════════════════════════════════════════════════════════════
-// ── Create referral (يُستدعى بعد إنشاء المستخدم الجديد) ──
+// ── Create referral ──
 // ══════════════════════════════════════════════════════════════════
 export async function createReferral(
   referrerId: number,
@@ -141,12 +141,15 @@ export async function processReferralOrders(): Promise<{
     LIMIT 500
   `);
 
-  const rows = (eligible as any).rows || [];
+  const rows = ((eligible as any).rows || []) as any[];
 
   for (const row of rows) {
+    // ✅ مصفوفة بدل متغير واحد — تدعم أكثر من مكافأة بنفس الطلب
+    const paidRewards: { referrerId: number; amount: number; stage: number; refereeId: number }[] = [];
+
     try {
       await db.transaction(async (tx) => {
-        // 1. تحقق من عدم المعالجة المسبقة داخل transaction (منع التزامن)
+        // 1. منع التزامن — تحقق مزدوج داخل transaction
         const dup = await tx.execute(sql`
           SELECT id FROM processed_referral_orders WHERE order_id = ${row.order_id} LIMIT 1
         `);
@@ -209,46 +212,45 @@ export async function processReferralOrders(): Promise<{
               UPDATE users SET balance = balance + ${s.reward} WHERE id = ${referrerId}
             `);
 
-            // إشعار
-            await tx.insert(sql`notifications` as any).values({
+            // إشعار داخل التطبيق (جدول notifications)
+            await tx.insert(notifications).values({
               userId: referrerId,
               title: '💰 مكافأة إحالة جديدة',
               body: `ربحت ${s.reward.toLocaleString()} د.ع من إحالة (المرحلة ${s.stage})`,
               data: JSON.stringify({ type: 'referral_reward', stage: s.stage, amount: s.reward, refereeId }),
-            } as any).catch(() => {});
+            });
 
+            // نحتفظ بالمكافأة لدفعة الـ push (خارج transaction)
+            paidRewards.push({ referrerId, amount: s.reward, stage: s.stage, refereeId });
             rewardsPaid++;
           }
         }
       });
       processed++;
+
+      // 5. إشعارات push خارج الـ transaction (بعد النجاح فقط)
+      for (const paid of paidRewards) {
+        try {
+          // جلب اسم المتجر للمدعو للإشعار
+          const refereeRows = await db.execute(sql`
+            SELECT store_name FROM users WHERE id = ${paid.refereeId} LIMIT 1
+          `);
+          const refereeStore = ((refereeRows as any).rows || [])[0]?.store_name || 'تاجر جديد';
+
+          await sendPushNotification({
+            userIds: [paid.referrerId],
+            title: '💰 مكافأة إحالة جديدة',
+            body: `ربحت ${paid.amount.toLocaleString()} د.ع من إحالة ${refereeStore} (المرحلة ${paid.stage})`,
+            data: { type: 'referral_reward', stage: paid.stage, amount: paid.amount },
+          });
+        } catch (pushErr) {
+          console.error('Referral push error:', pushErr);
+        }
+      }
     } catch (e: any) {
       console.error(`❌ referral process error for order ${row.order_id}:`, e);
       errors++;
     }
-  }
-
-  // إشعارات push (خارج الـ transaction لتجنب البطء)
-  try {
-    const { sendPushNotification } = await import('./notifications');
-    const rewardRows = await db.execute(sql`
-      SELECT rr.referrer_id, rr.amount, rr.stage, u.store_name AS referee_store
-      FROM referral_rewards rr
-      INNER JOIN users u ON u.id = rr.referee_id
-      WHERE rr.created_at >= NOW() - INTERVAL '5 minutes'
-        AND rr.status = 'paid'
-    `);
-    const recent = ((rewardRows as any).rows || []) as any[];
-    for (const r of recent) {
-      await sendPushNotification({
-        userIds: [Number(r.referrer_id)],
-        title: '💰 مكافأة إحالة جديدة',
-        body: `ربحت ${Number(r.amount).toLocaleString()} د.ع من إحالة ${r.referee_store} (المرحلة ${r.stage})`,
-        data: { type: 'referral_reward', stage: r.stage, amount: r.amount },
-      }).catch(() => {});
-    }
-  } catch (e) {
-    console.error('Referral push notification error:', e);
   }
 
   console.log(`✅ Referral cron: processed=${processed}, rewards=${rewardsPaid}, errors=${errors}`);

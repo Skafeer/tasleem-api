@@ -1,6 +1,7 @@
 import { saqrAssistant } from "./saqrService";
 import { tariqAssistant } from "./tariqService";
 import { Express, Request, Response } from "express";
+import { getMerchantReferralData, processReferralOrders, clearReferralSettingsCache, getReferralConfig } from "./referral";
 import { Server } from "http";
 import { setupAuth, requireAuth } from "./auth";
 const saqrLimiter  = rateLimit(10, 60_000);
@@ -34,6 +35,7 @@ import {
   promoCodes, promoUsages, products, orders, orderItems, banners, withdrawals,
   favorites, notifications, pushTokens, supportMessages, categories, inventoryLog,
   stores, storeProducts,
+  referrals, referralRewards, referralSettings, processedReferralOrders,
 } from "@shared/schema";
 import { eq, sql, and, desc } from "drizzle-orm";
 import bcrypt from "bcryptjs";
@@ -435,82 +437,357 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log('✅ store_products migration done');
   } catch (e) { console.log('store_products migration note:', e); }
 
-  
+
     // ══════════════════════════════════════════════════════════════════
-  // ── Referrals Migrations ──
+  // ── Referrals Routes ──
   // ══════════════════════════════════════════════════════════════════
-  try {
-    await db.execute(`CREATE TABLE IF NOT EXISTS referrals (
-      id SERIAL PRIMARY KEY,
-      referrer_id INTEGER NOT NULL,
-      referee_id INTEGER NOT NULL UNIQUE,
-      code TEXT NOT NULL,
-      delivered_orders_count INTEGER NOT NULL DEFAULT 0,
-      reward1_paid BOOLEAN NOT NULL DEFAULT FALSE,
-      reward1_at TIMESTAMP,
-      reward2_paid BOOLEAN NOT NULL DEFAULT FALSE,
-      reward2_at TIMESTAMP,
-      reward3_paid BOOLEAN NOT NULL DEFAULT FALSE,
-      reward3_at TIMESTAMP,
-      total_reward_paid REAL NOT NULL DEFAULT 0,
-      created_at TIMESTAMP DEFAULT NOW()
-    )`);
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)`);
-    console.log('✅ referrals migration done');
-  } catch (e) { console.log('referrals migration note:', e); }
 
-  try {
-    await db.execute(`CREATE TABLE IF NOT EXISTS referral_rewards (
-      id SERIAL PRIMARY KEY,
-      referral_id INTEGER NOT NULL,
-      referrer_id INTEGER NOT NULL,
-      referee_id INTEGER NOT NULL,
-      stage INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      orders_at_payout INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'paid',
-      cancelled_at TIMESTAMP,
-      cancelled_by INTEGER,
-      cancel_reason TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    )`);
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_referral_rewards_referral ON referral_rewards(referral_id)`);
-    console.log('✅ referral_rewards migration done');
-  } catch (e) { console.log('referral_rewards migration note:', e); }
+  // ─── للتاجر: بيانات صفحة الإحالة ───
+  app.get("/api/referrals/my", requireAuth, async (req: any, res) => {
+    try {
+      const data = await getMerchantReferralData(req.user.id);
+      if (!data) return res.status(404).json({ message: 'المستخدم غير موجود' });
+      res.json(data);
+    } catch (e: any) {
+      console.error('Get my referrals error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
 
-  try {
-    await db.execute(`CREATE TABLE IF NOT EXISTS processed_referral_orders (
-      id SERIAL PRIMARY KEY,
-      order_id INTEGER NOT NULL UNIQUE,
-      referee_id INTEGER NOT NULL,
-      referral_id INTEGER NOT NULL,
-      processed_at TIMESTAMP DEFAULT NOW()
-    )`);
-    console.log('✅ processed_referral_orders migration done');
-  } catch (e) { console.log('processed_referral_orders migration note:', e); }
+  // ─── للأدمن: إحصائيات عامة ───
+  app.get("/api/admin/referrals/stats", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const config = await getReferralConfig();
 
-  try {
-    await db.execute(`CREATE TABLE IF NOT EXISTS referral_settings (
-      id SERIAL PRIMARY KEY,
-      key TEXT NOT NULL UNIQUE,
-      value TEXT NOT NULL
-    )`);
-    await db.execute(`
-      INSERT INTO referral_settings (key, value) VALUES
-        ('referral_enabled', 'true'),
-        ('referral_days_hold', '7'),
-        ('referral_threshold_1', '5'),
-        ('referral_threshold_2', '20'),
-        ('referral_threshold_3', '45'),
-        ('referral_reward_1', '5000'),
-        ('referral_reward_2', '20000'),
-        ('referral_reward_3', '35000'),
-        ('referral_share_text', 'انضم لتسليم عبر كودي {CODE} واحصل على أول طلبك بسهولة! تسليم تتكفل بالتوصيل والمخزون، وانت ركز على البيع. 🚀')
-      ON CONFLICT (key) DO NOTHING
-    `);
-    console.log('✅ referral_settings migration + seed done');
-  } catch (e) { console.log('referral_settings migration note:', e); }
+      const totalsRes = await db.execute(sql`
+        SELECT
+          COUNT(*)::int AS total_referrals,
+          COUNT(*) FILTER (WHERE delivered_orders_count >= ${config.threshold1})::int AS stage1_count,
+          COUNT(*) FILTER (WHERE delivered_orders_count >= ${config.threshold2})::int AS stage2_count,
+          COUNT(*) FILTER (WHERE delivered_orders_count >= ${config.threshold3})::int AS stage3_count,
+          COALESCE(SUM(total_reward_paid), 0)::real AS total_reward_paid,
+          COALESCE(SUM(delivered_orders_count), 0)::int AS total_delivered_orders
+        FROM referrals
+      `);
+      const totals = (totalsRes as any).rows[0] || {};
 
+      const monthRes = await db.execute(sql`
+        SELECT COUNT(*)::int AS count
+        FROM referrals
+        WHERE created_at >= date_trunc('month', NOW())
+      `);
+      const thisMonth = Number((monthRes as any).rows[0]?.count || 0);
+
+      const rewardsRes = await db.execute(sql`
+        SELECT
+          COUNT(*)::int AS total_rewards,
+          COALESCE(SUM(amount), 0)::real AS total_amount,
+          COUNT(*) FILTER (WHERE status = 'paid')::int AS paid_count,
+          COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
+        FROM referral_rewards
+      `);
+      const rewardsStats = (rewardsRes as any).rows[0] || {};
+
+      res.json({
+        totalReferrals: Number(totals.total_referrals || 0),
+        activeReferrals: Number(totals.stage1_count || 0),
+        thisMonthReferrals: thisMonth,
+        totalRewardPaid: Number(totals.total_reward_paid || 0),
+        totalDeliveredOrders: Number(totals.total_delivered_orders || 0),
+        stages: {
+          s1Count: Number(totals.stage1_count || 0),
+          s2Count: Number(totals.stage2_count || 0),
+          s3Count: Number(totals.stage3_count || 0),
+        },
+        rewards: {
+          total: Number(rewardsStats.total_rewards || 0),
+          totalAmount: Number(rewardsStats.total_amount || 0),
+          paid: Number(rewardsStats.paid_count || 0),
+          cancelled: Number(rewardsStats.cancelled_count || 0),
+        },
+        config,
+      });
+    } catch (e: any) {
+      console.error('Admin referrals stats error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: قائمة الإحالات (مع فلترة + pagination) ───
+  app.get("/api/admin/referrals", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const page = Math.max(1, Number(req.query.page) || 1);
+      const limit = Math.min(100, Number(req.query.limit) || 20);
+      const offset = (page - 1) * limit;
+      const search = req.query.search ? String(req.query.search).trim() : '';
+      const stage = req.query.stage ? Number(req.query.stage) : null;
+      const from = req.query.from ? String(req.query.from) : null;
+      const to = req.query.to ? String(req.query.to) : null;
+
+      // ✅ بناء شروط آمنة (parameterized) — لا SQL injection
+      const conditions: any[] = [sql`1=1`];
+      if (search) {
+        const like = `%${search}%`;
+        conditions.push(sql`(ur.store_name ILIKE ${like} OR ue.store_name ILIKE ${like} OR ur.phone LIKE ${like} OR ue.phone LIKE ${like})`);
+      }
+      if (stage === 1) conditions.push(sql`r.delivered_orders_count >= 5 AND r.reward1_paid = FALSE`);
+      if (stage === 2) conditions.push(sql`r.delivered_orders_count >= 20 AND r.reward2_paid = FALSE`);
+      if (stage === 3) conditions.push(sql`r.delivered_orders_count >= 45 AND r.reward3_paid = FALSE`);
+      if (from) conditions.push(sql`r.created_at >= ${from}`);
+      if (to) conditions.push(sql`r.created_at <= ${to}`);
+
+      const where = sql.join(conditions, sql` AND `);
+
+      const countRes = await db.execute(sql`
+        SELECT COUNT(*)::int AS total
+        FROM referrals r
+        INNER JOIN users ur ON ur.id = r.referrer_id
+        INNER JOIN users ue ON ue.id = r.referee_id
+        WHERE ${where}
+      `);
+      const total = Number((countRes as any).rows[0]?.total || 0);
+
+      const listRes = await db.execute(sql`
+        SELECT
+          r.id, r.referrer_id, r.referee_id, r.code,
+          r.delivered_orders_count,
+          r.reward1_paid, r.reward1_at,
+          r.reward2_paid, r.reward2_at,
+          r.reward3_paid, r.reward3_at,
+          r.total_reward_paid, r.created_at,
+          ur.store_name AS referrer_store, ur.phone AS referrer_phone, ur.merchant_id AS referrer_code,
+          ue.store_name AS referee_store, ue.phone AS referee_phone, ue.merchant_id AS referee_code
+        FROM referrals r
+        INNER JOIN users ur ON ur.id = r.referrer_id
+        INNER JOIN users ue ON ue.id = r.referee_id
+        WHERE ${where}
+        ORDER BY r.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `);
+
+      const rows = ((listRes as any).rows || []) as any[];
+      const data = rows.map((r) => {
+        const count = Number(r.delivered_orders_count);
+        let currentStage = 0;
+        if (r.reward3_paid) currentStage = 3;
+        else if (r.reward2_paid) currentStage = 2;
+        else if (r.reward1_paid) currentStage = 1;
+        return {
+          id: r.id,
+          code: r.code,
+          referrer: { id: r.referrer_id, storeName: r.referrer_store, phone: r.referrer_phone, merchantId: r.referrer_code },
+          referee: { id: r.referee_id, storeName: r.referee_store, phone: r.referee_phone, merchantId: r.referee_code },
+          deliveredOrdersCount: count,
+          currentStage,
+          rewards: {
+            s1: { paid: !!r.reward1_paid, at: r.reward1_at },
+            s2: { paid: !!r.reward2_paid, at: r.reward2_at },
+            s3: { paid: !!r.reward3_paid, at: r.reward3_at },
+          },
+          totalRewardPaid: Number(r.total_reward_paid || 0),
+          createdAt: r.created_at,
+        };
+      });
+
+      res.json({ data, page, limit, total, totalPages: Math.ceil(total / limit), hasMore: offset + limit < total });
+    } catch (e: any) {
+      console.error('Admin referrals list error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: تفاصيل إحالة واحدة ───
+  app.get("/api/admin/referrals/:id", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const id = Number(req.params.id);
+      const refRes = await db.execute(sql`
+        SELECT r.*, 
+               ur.store_name AS referrer_store, ur.phone AS referrer_phone, ur.merchant_id AS referrer_code,
+               ue.store_name AS referee_store, ue.phone AS referee_phone, ue.merchant_id AS referee_code
+        FROM referrals r
+        INNER JOIN users ur ON ur.id = r.referrer_id
+        INNER JOIN users ue ON ue.id = r.referee_id
+        WHERE r.id = ${id} LIMIT 1
+      `);
+      const ref = ((refRes as any).rows || [])[0];
+      if (!ref) return res.status(404).json({ message: 'الإحالة غير موجودة' });
+
+      const rewardsRes = await db.execute(sql`
+        SELECT * FROM referral_rewards WHERE referral_id = ${id} ORDER BY created_at DESC
+      `);
+
+      res.json({
+        referral: ref,
+        rewards: ((rewardsRes as any).rows || []),
+      });
+    } catch (e: any) {
+      console.error('Admin referral details error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: إلغاء مكافأة (يخصم من رصيد الداعي) ───
+  app.patch("/api/admin/referrals/:id/cancel-reward", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const referralId = Number(req.params.id);
+      const { stage, reason } = req.body;
+      if (![1, 2, 3].includes(Number(stage))) return res.status(400).json({ message: 'المرحلة غير صحيحة' });
+
+      const rRes = await db.execute(sql`SELECT * FROM referrals WHERE id = ${referralId} LIMIT 1`);
+      const ref = ((rRes as any).rows || [])[0];
+      if (!ref) return res.status(404).json({ message: 'الإحالة غير موجودة' });
+
+      const paidKey = `reward${stage}_paid`;
+      const atKey = `reward${stage}_at`;
+      if (!ref[paidKey]) return res.status(400).json({ message: 'هذه المكافأة غير مدفوعة' });
+
+      // جلب صف المكافأة
+      const rewardRes = await db.execute(sql`
+        SELECT * FROM referral_rewards
+        WHERE referral_id = ${referralId} AND stage = ${stage} AND status = 'paid'
+        ORDER BY created_at DESC LIMIT 1
+      `);
+      const reward = ((rewardRes as any).rows || [])[0];
+      if (!reward) return res.status(404).json({ message: 'المكافأة غير موجودة' });
+
+      const amount = Number(reward.amount);
+      const referrerId = Number(reward.referrer_id);
+
+      // خصم من الرصيد + إلغاء المكافأة
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`UPDATE users SET balance = GREATEST(0, balance - ${amount}) WHERE id = ${referrerId}`);
+        await tx.execute(sql`
+          UPDATE referral_rewards
+          SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = ${req.user.id}, cancel_reason = ${reason || ''}
+          WHERE id = ${reward.id}
+        `);
+        await tx.execute(sql`
+          UPDATE referrals
+          SET ${sql.raw(paidKey)} = FALSE, ${sql.raw(atKey)} = NULL,
+              total_reward_paid = GREATEST(0, total_reward_paid - ${amount})
+          WHERE id = ${referralId}
+        `);
+        await tx.insert(notifications).values({
+          userId: referrerId,
+          title: '⚠️ تم إلغاء مكافأة إحالة',
+          body: `تم إلغاء مكافأة المرحلة ${stage} بقيمة ${amount.toLocaleString()} د.ع${reason ? ' — السبب: ' + reason : ''}`,
+          data: JSON.stringify({ type: 'referral_reward_cancelled', stage, amount }),
+        });
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Cancel referral reward error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: إعدادات النظام ───
+  app.get("/api/admin/referrals/settings", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const config = await getReferralConfig();
+      res.json(config);
+    } catch (e: any) {
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  app.patch("/api/admin/referrals/settings", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const {
+        enabled, daysHold,
+        threshold1, threshold2, threshold3,
+        reward1, reward2, reward3,
+        shareText,
+      } = req.body;
+
+      const updates: Record<string, string> = {};
+      if (enabled !== undefined) updates.referral_enabled = String(!!enabled);
+      if (daysHold !== undefined) updates.referral_days_hold = String(Number(daysHold));
+      if (threshold1 !== undefined) updates.referral_threshold_1 = String(Number(threshold1));
+      if (threshold2 !== undefined) updates.referral_threshold_2 = String(Number(threshold2));
+      if (threshold3 !== undefined) updates.referral_threshold_3 = String(Number(threshold3));
+      if (reward1 !== undefined) updates.referral_reward_1 = String(Number(reward1));
+      if (reward2 !== undefined) updates.referral_reward_2 = String(Number(reward2));
+      if (reward3 !== undefined) updates.referral_reward_3 = String(Number(reward3));
+      if (shareText !== undefined) updates.referral_share_text = String(shareText);
+
+      for (const [k, v] of Object.entries(updates)) {
+        await db.execute(sql`
+          INSERT INTO referral_settings (key, value) VALUES (${k}, ${v})
+          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        `);
+      }
+      clearReferralSettingsCache();
+
+      const config = await getReferralConfig();
+      res.json({ success: true, config });
+    } catch (e: any) {
+      console.error('Update referral settings error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: سجل المكافآت ───
+  app.get("/api/admin/referrals/rewards", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const page = Math.max(1, Number(req.query.page) || 1);
+      const limit = Math.min(100, Number(req.query.limit) || 20);
+      const offset = (page - 1) * limit;
+      const status = req.query.status ? String(req.query.status) : null;
+
+      // ✅ شرط آمن
+      const statusFilter = (status === 'paid' || status === 'cancelled')
+        ? sql`WHERE rr.status = ${status}`
+        : sql``;
+
+      const countRes = await db.execute(sql`
+        SELECT COUNT(*)::int AS total FROM referral_rewards rr ${statusFilter}
+      `);
+      const total = Number((countRes as any).rows[0]?.total || 0);
+
+      const listRes = await db.execute(sql`
+        SELECT rr.*, ur.store_name AS referrer_store, ue.store_name AS referee_store
+        FROM referral_rewards rr
+        INNER JOIN users ur ON ur.id = rr.referrer_id
+        INNER JOIN users ue ON ue.id = rr.referee_id
+        ${statusFilter}
+        ORDER BY rr.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `);
+
+      res.json({
+        data: ((listRes as any).rows || []),
+        page, limit, total,
+        totalPages: Math.ceil(total / limit),
+        hasMore: offset + limit < total,
+      });
+    } catch (e: any) {
+      console.error('Admin referral rewards error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  // ─── للأدمن: تشغيل الـ Cron يدوياً (اختباري) ───
+  app.post("/api/admin/referrals/process-now", requireAuth, async (req: any, res) => {
+    if (!hasPermission(req.user, 'referrals')) return res.status(403).json({ message: "غير مصرح" });
+    try {
+      const result = await processReferralOrders();
+      res.json(result);
+    } catch (e: any) {
+      console.error('Manual process error:', e);
+      res.status(500).json({ message: 'حدث خطأ في الخادم' });
+    }
+  });
+
+  
   // ══════════════════════════════════════════════════════════════════
   // ── Products ──
   // ══════════════════════════════════════════════════════════════════

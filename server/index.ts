@@ -4,6 +4,8 @@ import { createServer } from "http";
 import { pool } from './db';
 import cors from "cors";
 import helmet from "helmet";
+import cron from 'node-cron';
+import { processReferralOrders } from './referral';
 
 const app = express();
 
@@ -130,6 +132,36 @@ app.get("/", (_req, res) => res.json({ status: "ok", app: "Tasleem API" }));
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Referral Cron ──
+  // ══════════════════════════════════════════════════════════════════
+
+  // ⏰ كل يوم 3:00 صباحاً بتوقيت بغداد
+  cron.schedule('0 3 * * *', async () => {
+    console.log('⏰ Running referral cron...');
+    try {
+      const result = await processReferralOrders();
+      console.log('✅ Referral cron result:', result);
+    } catch (e) {
+      console.error('❌ Referral cron failed:', e);
+    }
+  }, { timezone: 'Asia/Baghdad' });
+  console.log('⏰ Referral cron scheduled: daily 03:00 (Asia/Baghdad)');
+
+  // 🔧 اختياري: تشغيل فوري عند بدء السيرفر (للتجربة فقط)
+  // فعّله عبر: RUN_REFERRAL_ON_START=true
+  if (process.env.RUN_REFERRAL_ON_START === 'true') {
+    setTimeout(async () => {
+      console.log('🔧 Running referral cron on startup (test)...');
+      try {
+        const result = await processReferralOrders();
+        console.log('✅ Startup referral result:', result);
+      } catch (e) {
+        console.error('❌ Startup referral failed:', e);
+      }
+    }, 5000); // بعد 5 ثواني من الإقلاع
+  }
 
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen({ port, host: "0.0.0.0" }, () => {
